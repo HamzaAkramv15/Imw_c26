@@ -136,6 +136,16 @@ class _Slab {
   final Offset centroid;
   final int sign;
 
+  /// Centroid in normalised (0..1) space, to find the room a slab stands in.
+  Offset get normCentroid {
+    var x = 0.0, y = 0.0;
+    for (final o in norm) {
+      x += o.dx;
+      y += o.dy;
+    }
+    return Offset(x / norm.length, y / norm.length);
+  }
+
   bool contains(Offset p) {
     var inside = false;
     for (var i = 0, j = norm.length - 1; i < norm.length; j = i++) {
@@ -149,17 +159,48 @@ class _Slab {
   }
 }
 
+/// A statue that stands upright on its plinth (data: kFigures in gem_blocks.dart).
+/// Its outline is a front elevation, so it is turned to face the viewer.
+class _Figure {
+  _Figure({
+    required this.id,
+    required this.norm,
+    required this.anchor,
+    required this.height,
+    required this.uv,
+  });
+  final String id;
+  final Offset norm; // anchor, 0..1 (to find the room it stands in)
+  final Offset anchor; // map px
+  final double height; // map px
+  final List<Offset> uv; // u across, v up, in units of [height]
+}
+
+/// Which walls of a room prism to paint: [back] the far (inner) faces,
+/// [front] the near (outer) faces, [all] both.
+enum _Pass { all, back, front }
+
 /// Wall height of a region kind, as a fraction of the plan's short side.
 double _heightFactor(RegionKind k) => switch (k) {
   RegionKind.building => 0.06,
   RegionKind.attraction => 0.03,
   RegionKind.hall || RegionKind.zone => 0.024,
-  RegionKind.gallery => 0.028,
+  // Gallery outlines come from an old tracing and are not real walls: no prism.
+  // The Main Galleries' real walls are the 'rwall' strips in gem_blocks.dart.
+  RegionKind.gallery => 0,
   RegionKind.garden || RegionKind.parking => 0,
 };
 
+/// Stair treads in gem_blocks.dart climb to 0.0474u, taller than any hall wall.
+/// They are drawn at this fraction of that, so the tallest tread (0.0213u) stays
+/// below the 0.024u hall walls and the 0.034u Grand Stairs walls.
+const double _stepScale = 0.45;
+
 /// Open-air areas that are drawn as "attractions" but should stay (almost) flat.
 const Map<String, double> _heightOverride = {
+  // The staircase well is walled higher than a normal hall so no tread
+  // (<= 0.0213u after _stepScale) can ever rise above its walls.
+  'mb_zone_stairs': 0.034,
   'cx_events': 0,
   'cx_pyramids_steps': 0.012,
   'cx_obelisk': 0.02,
@@ -331,6 +372,11 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   List<_Prism> _prisms = const [];
   List<_Prism> _solids = const [];
   List<_Slab> _slabs = const [];
+  List<_Figure> _figures = const [];
+
+  /// Garden and parking regions: flat ground that has no walls and is not in
+  /// _floorPath, so it gets its own fill (GemPalette.garden / .parking).
+  List<(Path, RegionKind)> _ground = const [];
   final Map<String, Path> _paths = {};
   final Map<String, _Prism> _prismById = {};
   Path _floorPath = Path();
@@ -444,6 +490,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final u = math.min(px.width, px.height);
     final prisms = <_Prism>[];
     final floor = Path();
+    final ground = <(Path, RegionKind)>[];
     _paths.clear();
     _prismById.clear();
     for (final r in widget.regions) {
@@ -453,6 +500,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       if (pts.length < 3) continue;
       final path = r.toPath(px);
       _paths[r.id] = path;
+      if (r.kind == RegionKind.garden || r.kind == RegionKind.parking) {
+        ground.add((path, r.kind));
+      }
       if (r.kind == RegionKind.gallery ||
           r.kind == RegionKind.hall ||
           r.kind == RegionKind.zone)
@@ -479,6 +529,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       _prismById[r.id] = pr;
     }
     _prisms = prisms;
+    _ground = ground;
     final slabs = <_Slab>[];
     void addSlab(String kind, double h, List<double> v) {
       if (v.length < 6) return;
@@ -506,9 +557,22 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       addSlab(b.kind, b.h, b.pts);
     }
     for (final st in kSteps[widget.map.id] ?? const <MapStep>[]) {
-      addSlab('step', st.h, st.pts);
+      addSlab('step', st.h * _stepScale, st.pts);
     }
     _slabs = slabs;
+    _figures = [
+      for (final f in kFigures[widget.map.id] ?? const <MapFigure>[])
+        _Figure(
+          id: f.id,
+          norm: Offset(f.x, f.y),
+          anchor: Offset(f.x * px.width, f.y * px.height),
+          height: f.height * u,
+          uv: [
+            for (var i = 0; i + 1 < f.uv.length; i += 2)
+              Offset(f.uv[i], f.uv[i + 1]),
+          ],
+        ),
+    ];
     _solids = [
       for (final p in prisms)
         if (p.solid) p,
@@ -516,7 +580,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     _floorPath = floor;
     _maxHeight = math.max(
       prisms.fold(0.0, (m, p) => math.max(m, p.height)),
-      slabs.fold(0.0, (m, s) => math.max(m, s.height)),
+      math.max(
+        slabs.fold(0.0, (m, s) => math.max(m, s.height)),
+        _figures.fold(0.0, (m, f) => math.max(m, f.height)),
+      ),
     ) * 1.8;
   }
 
@@ -546,7 +613,12 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     }
     // shop units, fixtures and stair treads: pins and the route stand on top
     for (final s in _slabs) {
-      if (s.kind == 'wall' || s.kind == 'monument' || s.kind == 'statue') continue;
+      if (s.kind == 'wall' ||
+          s.kind == 'rwall' ||
+          s.kind == 'monument' ||
+          s.kind == 'statue') {
+        continue;
+      }
       if (s.height > z && s.contains(n)) z = s.height;
     }
     return z;
@@ -1303,13 +1375,14 @@ class _IsoPainter extends CustomPainter {
     canvas.save();
     canvas.transform(full.storage);
     canvas.drawPath(s._floorPath, Paint()..color = _floorColor);
+    _groundFills(canvas);
     _art(canvas, px);
     canvas.restore();
 
-    // ── 1b. shop units, cases, statues, stair treads ──
-    _slabsPaint(canvas, full, yaw, view);
-
-    // ── 2. rooms: back to front ──
+    // ── 2. rooms and the things standing in them, back to front ──
+    // Per room: far walls -> what stands on the floor -> near walls. So a tread
+    // or a case is hidden by the wall in front of it and hides the wall behind
+    // it, whatever the yaw/tilt, instead of every wall landing on top of it.
     final prisms = [...s._prisms]
       ..sort(
         (a, b) => project(
@@ -1318,28 +1391,39 @@ class _IsoPainter extends CustomPainter {
           a.centroid.dy,
         ).dy.compareTo(project(full, b.centroid.dx, b.centroid.dy).dy),
       );
-    if (focus.isEmpty) {
-      for (final pr in prisms) {
-        _prism(canvas, full, yaw, pr, view, false);
-      }
-    } else {
-      for (final pr in prisms) {
-        if (!focus.contains(pr.region.id))
-          _prism(canvas, full, yaw, pr, view, false);
-      }
+    final rest = focus.isEmpty
+        ? prisms
+        : [for (final pr in prisms) if (!focus.contains(pr.region.id)) pr];
+    for (final pr in rest) {
+      _prism(canvas, full, yaw, pr, view, false, _Pass.back);
+    }
+    _slabsPaint(canvas, full, yaw, view);
+    for (final pr in rest) {
+      _prism(canvas, full, yaw, pr, view, false, _Pass.front);
+    }
+    // The statues are taller than every wall, so they are drawn after the near
+    // walls: a wall must never be painted across a standing figure.
+    _figuresPaint(canvas, full, yaw, view);
+    if (focus.isNotEmpty) {
+      final lit = [for (final pr in prisms) if (focus.contains(pr.region.id)) pr];
       _veil(canvas, full);
       _spotlight(canvas, full, focus, zoom, px);
-      for (final pr in prisms) {
-        if (focus.contains(pr.region.id))
-          _prism(canvas, full, yaw, pr, view, true);
+      for (final pr in lit) {
+        _prism(canvas, full, yaw, pr, view, true, _Pass.back);
       }
+      // what stands inside a lifted room is shown again, bright
+      _slabsPaint(canvas, full, yaw, view, inside: lit);
+      for (final pr in lit) {
+        _prism(canvas, full, yaw, pr, view, true, _Pass.front);
+      }
+      _figuresPaint(canvas, full, yaw, view, inside: lit);
     }
 
     // ── 3. route ──
     _route(canvas, full);
 
     // ── 4. names ──
-    _labels(canvas, full, flat, view);
+    _labels(canvas, full, flat, view, size);
   }
 
   Color _slabColor(String kind) => switch (kind) {
@@ -1348,17 +1432,29 @@ class _IsoPainter extends CustomPainter {
     'service' => Color.lerp(pal.pinService, pal.surfaceHi, 0.45)!,
     'plinth' => pal.dark ? const Color(0xffd8bf86) : const Color(0xffcfb06a),
     'monument' || 'statue' => const Color(0xff4a4f55),
-    'wall' => pal.solid,
+    'wall' || 'rwall' => pal.solid,
     'step' => Color.lerp(pal.gold, _floorColor, 0.55)!,
     'ledge' => Color.lerp(pal.solid, _floorColor, 0.45)!,
     _ => Color.lerp(pal.solid, _floorColor, 0.55)!,
   };
 
-  /// Solids that stand on the floor, back to front. Drawn BEFORE the room
-  /// walls so a room's near wall correctly hides what is behind it.
-  void _slabsPaint(Canvas canvas, Matrix4 full, double yaw, Rect view) {
+  /// Solids that stand on the floor, back to front. Painted between a room's
+  /// far walls and its near walls (see paint). With [inside], only the slabs
+  /// whose centre lies in one of those rooms.
+  void _slabsPaint(
+    Canvas canvas,
+    Matrix4 full,
+    double yaw,
+    Rect view, {
+    List<_Prism>? inside,
+  }) {
     if (s._slabs.isEmpty) return;
-    final order = [...s._slabs]
+    final order = [
+      for (final sl in s._slabs)
+        if (inside == null ||
+            inside.any((pr) => pr.region.contains(sl.normCentroid)))
+          sl,
+    ]
       ..sort(
         (a, b) => project(full, a.centroid.dx, a.centroid.dy, 0)
             .dy
@@ -1406,7 +1502,7 @@ class _IsoPainter extends CustomPainter {
       }
       final roof = Path()..addPolygon(top, true);
       canvas.drawPath(roof, Paint()..color = roofC);
-      if (sl.kind != 'step') {
+      if (sl.kind != 'step' && sl.kind != 'rwall') {
         canvas.drawPath(
           roof,
           Paint()
@@ -1415,6 +1511,113 @@ class _IsoPainter extends CustomPainter {
             ..strokeWidth = 0.8,
         );
       }
+    }
+  }
+
+  /// Gardens (sage green) and parking (slate) lie flat on the ground. They are
+  /// drawn under the artwork, so the plan's own fills and outlines stay on top.
+  void _groundFills(Canvas canvas) {
+    for (final (path, kind) in s._ground) {
+      final fill = kind == RegionKind.garden ? pal.garden : pal.parking;
+      canvas.drawPath(path, Paint()..color = fill);
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = pal.rim.withValues(alpha: pal.dark ? 0.16 : 0.45)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2
+          ..strokeJoin = StrokeJoin.round,
+      );
+    }
+  }
+
+  Color _figureColor(String id) => switch (id) {
+    // Memphis colossus: red granite. Tanis colossus: quartzite.
+    'ramesses_san_el_hagar' =>
+      pal.dark ? const Color(0xffc9a074) : const Color(0xffb98b62),
+    _ => pal.dark ? const Color(0xffc27a6c) : const Color(0xffad6c5e),
+  };
+
+  /// Statues that stand upright: the plan's elevation outline is raised on the
+  /// ground plane, turned to face the viewer (a billboard), with a little depth
+  /// so it still reads as a solid when the map is tilted.
+  void _figuresPaint(
+    Canvas canvas,
+    Matrix4 full,
+    double yaw,
+    Rect view, {
+    List<_Prism>? inside,
+  }) {
+    if (s._figures.isEmpty) return;
+    final cs = math.cos(yaw), sn = math.sin(yaw);
+    // ground-plane directions: screen-right, and towards the viewer
+    final rx = cs, ry = -sn, tx = sn, ty = cs;
+    final order = [
+      for (final f in s._figures)
+        if (inside == null ||
+            inside.any((pr) => pr.region.contains(f.norm)))
+          f,
+    ]..sort(
+        (a, b) => project(full, a.anchor.dx, a.anchor.dy, 0).dy
+            .compareTo(project(full, b.anchor.dx, b.anchor.dy, 0).dy),
+      );
+    for (final f in order) {
+      final h = f.height;
+      final half = h * 0.07; // half the thickness, along the view direction
+      Offset at(Offset p, double side) => project(
+        full,
+        f.anchor.dx + rx * p.dx * h + tx * side,
+        f.anchor.dy + ry * p.dx * h + ty * side,
+        p.dy * h,
+      );
+      final front = [for (final p in f.uv) at(p, half)];
+      final back = [for (final p in f.uv) at(p, -half)];
+      var l = double.infinity, t = double.infinity;
+      var r = -double.infinity, b = -double.infinity;
+      for (final o in [...front, ...back]) {
+        l = math.min(l, o.dx);
+        t = math.min(t, o.dy);
+        r = math.max(r, o.dx);
+        b = math.max(b, o.dy);
+      }
+      if (!view.overlaps(Rect.fromLTRB(l, t, r, b))) continue;
+      final c = _figureColor(f.id);
+      // contact shadow on the floor
+      final foot = project(full, f.anchor.dx, f.anchor.dy, 0);
+      final sh = project(full, f.anchor.dx + rx * h * 0.2, f.anchor.dy, 0);
+      canvas.drawOval(
+        Rect.fromCenter(
+          center: foot,
+          width: (sh.dx - foot.dx).abs() * 2.2,
+          height: (sh.dx - foot.dx).abs() * 0.9,
+        ),
+        Paint()..color = pal.shadow.withValues(alpha: pal.dark ? 0.45 : 0.22),
+      );
+      canvas.drawPath(
+        Path()..addPolygon(back, true),
+        Paint()..color = _shade(c, 0.55),
+      );
+      final n = f.uv.length;
+      for (var i = 0; i < n; i++) {
+        final j = (i + 1) % n;
+        canvas.drawPath(
+          Path()..addPolygon([front[i], front[j], back[j], back[i]], true),
+          Paint()
+            ..color = _shade(c, 0.66)
+            ..style = PaintingStyle.fill
+            ..isAntiAlias = true,
+        );
+      }
+      final face = Path()..addPolygon(front, true);
+      canvas.drawPath(face, Paint()..color = c);
+      canvas.drawPath(
+        face,
+        Paint()
+          ..color = _shade(c, 0.6)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.7
+          ..strokeJoin = StrokeJoin.round,
+      );
     }
   }
 
@@ -1464,7 +1667,16 @@ class _IsoPainter extends CustomPainter {
       if (pr != null && pr.solid) continue; // its roof shows the plan
       canvas.save();
       canvas.clipPath(path);
-      canvas.drawPath(path, Paint()..color = _floorColor);
+      final kind = s.widget.regions.where((r) => r.id == id).firstOrNull?.kind;
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = switch (kind) {
+            RegionKind.garden => pal.garden,
+            RegionKind.parking => pal.parking,
+            _ => _floorColor,
+          },
+      );
       _art(canvas, px);
       canvas.restore();
       canvas.drawPath(
@@ -1490,8 +1702,11 @@ class _IsoPainter extends CustomPainter {
     double yaw,
     _Prism pr,
     Rect view,
-    bool focused,
-  ) {
+    bool focused, [
+    _Pass pass = _Pass.all,
+  ]) {
+    // A solid block is one opaque body: it is drawn whole, in the front pass.
+    if (pr.solid && pass == _Pass.back) return;
     final n = pr.pts.length;
     final h = pr.height * (1 + 0.7 * s._liftOf(pr.region.id));
     final base = List<Offset>.generate(
@@ -1544,6 +1759,12 @@ class _IsoPainter extends CustomPainter {
       final sx = nx * cs - ny * sn, sy = nx * sn + ny * cs;
       final facing =
           sy >= 0; // outer face towards us; otherwise we see the inner face
+      // back pass = the far walls we look at from inside (behind everything
+      // that stands in the room); front pass = the near walls (in front of it).
+      if (!pr.solid) {
+        if (pass == _Pass.back && facing) continue;
+        if (pass == _Pass.front && !facing) continue;
+      }
       final k =
           ((facing ? (sx * _lx + sy * _ly) : -(sx * _lx + sy * _ly)) * 0.5 +
                   0.5)
@@ -1561,7 +1782,7 @@ class _IsoPainter extends CustomPainter {
       canvas.drawLine(top[i], top[j], rim);
     }
 
-    if (pr.solid) {
+    if (pr.solid && pass != _Pass.back) {
       final roof = Path()..addPolygon(top, true);
       canvas.save();
       canvas.clipPath(roof, doAntiAlias: true);
@@ -1656,7 +1877,15 @@ class _IsoPainter extends CustomPainter {
     }
   }
 
-  void _labels(Canvas canvas, Matrix4 full, Matrix4 flat, Rect view) {
+  void _labels(
+    Canvas canvas,
+    Matrix4 full,
+    Matrix4 flat,
+    Rect view,
+    Size size,
+  ) {
+    final screen = Offset.zero & size;
+    final safe = screen.deflate(6);
     final placed = <Rect>[];
     final zoomRel =
         _MuseumMapCanvasState._scaleOf(flat) / math.max(1e-6, s._fit0);
@@ -1665,17 +1894,38 @@ class _IsoPainter extends CustomPainter {
       if (zoomRel < it.minZoom) continue;
       final pos = Offset(it.n.dx * px.width, it.n.dy * px.height);
       final sp = project(full, pos.dx, pos.dy, s._groundZ(it.n));
-      if (!view.contains(sp)) continue;
+      if (!screen.inflate(40).contains(sp)) continue;
       final tx = s._text(it, pal);
-      final rect = Rect.fromCenter(
+      var rect = Rect.fromCenter(
         center: sp,
         width: tx.fill.width,
         height: tx.fill.height,
       ).inflate(4);
+      // A label near the screen edge slides inwards so its whole word stays
+      // readable (e.g. "KINGSHIP" used to be cut in half by the edge).
+      var shift = Offset.zero;
+      if (it.rotation == 0) {
+        final dx = rect.width >= safe.width
+            ? 0.0
+            : rect.left < safe.left
+            ? safe.left - rect.left
+            : rect.right > safe.right
+            ? safe.right - rect.right
+            : 0.0;
+        final dy = rect.height >= safe.height
+            ? 0.0
+            : rect.top < safe.top
+            ? safe.top - rect.top
+            : rect.bottom > safe.bottom
+            ? safe.bottom - rect.bottom
+            : 0.0;
+        shift = Offset(dx, dy);
+        rect = rect.shift(shift);
+      }
       if (!it.force && placed.any((o) => o.overlaps(rect))) continue;
       placed.add(rect);
       canvas.save();
-      canvas.translate(sp.dx, sp.dy);
+      canvas.translate(sp.dx + shift.dx, sp.dy + shift.dy);
       if (it.rotation != 0) {
         // the text direction as it appears on the tilted plane
         final a = it.rotation * math.pi / 180;

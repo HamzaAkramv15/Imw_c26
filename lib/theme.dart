@@ -54,6 +54,8 @@ class GemPalette {
     required this.rim,
     required this.pinService,
     required this.shadow,
+    required this.garden,
+    required this.parking,
   });
 
   final bool dark;
@@ -103,6 +105,11 @@ class GemPalette {
   final Color pinService;
   final Color shadow;
 
+  /// Ground fills for the complex plan: gardens (sage green) and parking
+  /// (slate). They have no walls, so without a fill they melt into [mapBg].
+  final Color garden;
+  final Color parking;
+
   static const night = GemPalette(
     dark: true,
     bg: Color(0xff14171b),
@@ -126,6 +133,8 @@ class GemPalette {
     rim: Color(0xfff3ecda),
     pinService: Color(0xff4a515a),
     shadow: Color(0xff000000),
+    garden: Color(0xff3f5c47),
+    parking: Color(0xff3d4752),
   );
 
   static const day = GemPalette(
@@ -151,6 +160,8 @@ class GemPalette {
     rim: Color(0xffffffff),
     pinService: Color(0xff1b1f24),
     shadow: Color(0xff382a0e),
+    garden: Color(0xff9fbb93),
+    parking: Color(0xffaab4be),
   );
 
   /// Pin / chip colour for an era or accent that is [GemColors.ink] by

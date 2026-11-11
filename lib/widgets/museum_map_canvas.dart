@@ -11,6 +11,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../data/gem_blocks.dart';
 import '../data/gem_extras.dart';
+import '../data/gem_floors.dart';
 import '../data/gem_map_data.dart';
 import '../data/gem_paths.dart';
 import '../i18n/strings.dart';
@@ -380,6 +381,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   final Map<String, Path> _paths = {};
   final Map<String, _Prism> _prismById = {};
   Path _floorPath = Path();
+
+  /// Flat floors from gem_floors.dart, painted in list order under the plan.
+  List<(String, Path)> _extraFloors = const [];
   double _maxHeight = 0;
   List<Float64List> _routeGeo = const [];
 
@@ -556,9 +560,26 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     for (final b in kBlocks[widget.map.id] ?? const <MapBlock>[]) {
       addSlab(b.kind, b.h, b.pts);
     }
+    for (final b in kExtraBlocks[widget.map.id] ?? const <MapBlock>[]) {
+      addSlab(b.kind, b.h, b.pts);
+    }
     for (final st in kSteps[widget.map.id] ?? const <MapStep>[]) {
       addSlab('step', st.h * _stepScale, st.pts);
     }
+    for (final st in kExtraSteps[widget.map.id] ?? const <MapStep>[]) {
+      addSlab('step', st.h * _stepScale, st.pts);
+    }
+    // flat floors that no region covers (footprint, halls, landings, display zones)
+    final extra = <(String, Path)>[];
+    for (final f in kFloors[widget.map.id] ?? const <MapFloor>[]) {
+      if (f.pts.length < 6) continue;
+      final fp = <Offset>[
+        for (var i = 0; i + 1 < f.pts.length; i += 2)
+          Offset(f.pts[i] * px.width, f.pts[i + 1] * px.height),
+      ];
+      extra.add((f.kind, Path()..addPolygon(fp, true)));
+    }
+    _extraFloors = extra;
     _slabs = slabs;
     _figures = [
       for (final f in kFigures[widget.map.id] ?? const <MapFigure>[])
@@ -1375,6 +1396,17 @@ class _IsoPainter extends CustomPainter {
     canvas.save();
     canvas.transform(full.storage);
     canvas.drawPath(s._floorPath, Paint()..color = _floorColor);
+    for (final (kind, path) in s._extraFloors) {
+      final c = switch (kind) {
+        // Mode-independent brand tints, like _floorColor itself, so a hall or zone
+        // is the same lightness in day and night (pal.gold is dark in day mode).
+        'hall' => Color.lerp(_floorColor, GemColors.teal, 0.16)!,
+        'landing' => Color.lerp(_floorColor, GemColors.gold, 0.28)!,
+        'zone' => Color.lerp(_floorColor, GemColors.gold, 0.38)!,
+        _ => _floorColor,
+      };
+      canvas.drawPath(path, Paint()..color = c);
+    }
     _groundFills(canvas);
     _art(canvas, px);
     canvas.restore();

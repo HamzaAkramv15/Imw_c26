@@ -212,8 +212,9 @@ bool _pointInPoly(Offset p, List<Offset> poly) {
   for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
     final a = poly[i], b = poly[j];
     if ((a.dy > p.dy) != (b.dy > p.dy) &&
-        p.dx < (b.dx - a.dx) * (p.dy - a.dy) / (b.dy - a.dy) + a.dx)
+        p.dx < (b.dx - a.dx) * (p.dy - a.dy) / (b.dy - a.dy) + a.dx) {
       inside = !inside;
+    }
   }
   return inside;
 }
@@ -438,12 +439,14 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   void didUpdateWidget(MuseumMapCanvas old) {
     super.didUpdateWidget(old);
     if (old.resetTick != widget.resetTick ||
-        old.quarterTurns != widget.quarterTurns)
+        old.quarterTurns != widget.quarterTurns) {
       _needsFit = true;
+    }
     if (old.focusTick != widget.focusTick) _needsFocus = true;
     if (old.zoomTick != widget.zoomTick) _zoomAtCenter(widget.zoomFactor);
-    if (old.tilted != widget.tilted)
+    if (old.tilted != widget.tilted) {
       widget.tilted ? _tilt.forward() : _tilt.reverse();
+    }
     if (!identical(old.regions, widget.regions)) _buildScene();
     if (old.selectedRegionId != widget.selectedRegionId) {
       _liftFrom = _liftTo;
@@ -509,8 +512,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       }
       if (r.kind == RegionKind.gallery ||
           r.kind == RegionKind.hall ||
-          r.kind == RegionKind.zone)
+          r.kind == RegionKind.zone) {
         floor.addPolygon(pts, true);
+      }
       final f = _heightOverride[r.id] ?? _heightFactor(r.kind);
       if (f <= 0) continue;
       var s = 0.0, cx = 0.0, cy = 0.0;
@@ -540,7 +544,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       final norm = <Offset>[
         for (var i = 0; i + 1 < v.length; i += 2) Offset(v[i], v[i + 1]),
       ];
-      final pts = [for (final o in norm) Offset(o.dx * px.width, o.dy * px.height)];
+      final pts = [
+        for (final o in norm) Offset(o.dx * px.width, o.dy * px.height),
+      ];
       var s = 0.0, cx = 0.0, cy = 0.0;
       for (var k = 0; k < pts.length; k++) {
         final a = pts[k], b = pts[(k + 1) % pts.length];
@@ -548,15 +554,18 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         cx += a.dx;
         cy += a.dy;
       }
-      slabs.add(_Slab(
-        kind: kind,
-        norm: norm,
-        pts: pts,
-        height: h * u,
-        centroid: Offset(cx / pts.length, cy / pts.length),
-        sign: s >= 0 ? 1 : -1,
-      ));
+      slabs.add(
+        _Slab(
+          kind: kind,
+          norm: norm,
+          pts: pts,
+          height: h * u,
+          centroid: Offset(cx / pts.length, cy / pts.length),
+          sign: s >= 0 ? 1 : -1,
+        ),
+      );
     }
+
     for (final b in kBlocks[widget.map.id] ?? const <MapBlock>[]) {
       addSlab(b.kind, b.h, b.pts);
     }
@@ -599,13 +608,15 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         if (p.solid) p,
     ];
     _floorPath = floor;
-    _maxHeight = math.max(
-      prisms.fold(0.0, (m, p) => math.max(m, p.height)),
-      math.max(
-        slabs.fold(0.0, (m, s) => math.max(m, s.height)),
-        _figures.fold(0.0, (m, f) => math.max(m, f.height)),
-      ),
-    ) * 1.8;
+    _maxHeight =
+        math.max(
+          prisms.fold(0.0, (m, p) => math.max(m, p.height)),
+          math.max(
+            slabs.fold(0.0, (m, s) => math.max(m, s.height)),
+            _figures.fold(0.0, (m, f) => math.max(m, f.height)),
+          ),
+        ) *
+        1.8;
   }
 
   /// How far region [id] is risen: 1 = selected, 0 = resting.
@@ -626,11 +637,12 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   double _groundZ(Offset n, {bool lifted = true}) {
     var z = 0.0;
     for (final p in _solids) {
-      if (p.region.contains(n))
+      if (p.region.contains(n)) {
         z = math.max(
           z,
           p.height * (lifted ? 1 + 0.7 * _liftOf(p.region.id) : 1),
         );
+      }
     }
     // shop units, fixtures and stair treads: pins and the route stand on top
     for (final s in _slabs) {
@@ -1107,8 +1119,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
           _needsFocus = false;
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            if (fit)
+            if (fit) {
               widget.transform.value = _fitMatrix(_vp, widget.quarterTurns);
+            }
             if (focus) {
               _focusOn(_vp);
               widget.onFocusDone?.call();
@@ -1228,7 +1241,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       final s = _screenOf(full, pl.position, z: _groundZ(pl.position));
       if (!_onScreen(s)) continue;
       if (c.prio > 2) {
-        final sep = pl.category.isDense ? _pinSeparation * (rel >= 2.0 ? 0.8 : 0.62) : _pinSeparation;
+        final sep = pl.category.isDense
+            ? _pinSeparation * (rel >= 2.0 ? 0.8 : 0.62)
+            : _pinSeparation;
         var clash = false;
         for (final o in out) {
           if ((o.screen - s).distance < sep) {
@@ -1272,8 +1287,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   }
 
   List<Widget> _markers(Matrix4 full, GemPalette p) {
-    if (widget.originMapId != widget.map.id || widget.originPos == null)
+    if (widget.originMapId != widget.map.id || widget.originPos == null) {
       return const [];
+    }
     final s = _screenOf(
       full,
       widget.originPos!,
@@ -1425,7 +1441,10 @@ class _IsoPainter extends CustomPainter {
       );
     final rest = focus.isEmpty
         ? prisms
-        : [for (final pr in prisms) if (!focus.contains(pr.region.id)) pr];
+        : [
+            for (final pr in prisms)
+              if (!focus.contains(pr.region.id)) pr,
+          ];
     for (final pr in rest) {
       _prism(canvas, full, yaw, pr, view, false, _Pass.back);
     }
@@ -1437,7 +1456,10 @@ class _IsoPainter extends CustomPainter {
     // walls: a wall must never be painted across a standing figure.
     _figuresPaint(canvas, full, yaw, view);
     if (focus.isNotEmpty) {
-      final lit = [for (final pr in prisms) if (focus.contains(pr.region.id)) pr];
+      final lit = [
+        for (final pr in prisms)
+          if (focus.contains(pr.region.id)) pr,
+      ];
       _veil(canvas, full);
       _spotlight(canvas, full, focus, zoom, px);
       for (final pr in lit) {
@@ -1481,17 +1503,20 @@ class _IsoPainter extends CustomPainter {
     List<_Prism>? inside,
   }) {
     if (s._slabs.isEmpty) return;
-    final order = [
-      for (final sl in s._slabs)
-        if (inside == null ||
-            inside.any((pr) => pr.region.contains(sl.normCentroid)))
-          sl,
-    ]
-      ..sort(
-        (a, b) => project(full, a.centroid.dx, a.centroid.dy, 0)
-            .dy
-            .compareTo(project(full, b.centroid.dx, b.centroid.dy, 0).dy),
-      );
+    final order =
+        [
+          for (final sl in s._slabs)
+            if (inside == null ||
+                inside.any((pr) => pr.region.contains(sl.normCentroid)))
+              sl,
+        ]..sort(
+          (a, b) => project(
+            full,
+            a.centroid.dx,
+            a.centroid.dy,
+            0,
+          ).dy.compareTo(project(full, b.centroid.dx, b.centroid.dy, 0).dy),
+        );
     final cs = math.cos(yaw), sn = math.sin(yaw);
     for (final sl in order) {
       final n = sl.pts.length;
@@ -1510,11 +1535,15 @@ class _IsoPainter extends CustomPainter {
       final roofC = _slabColor(sl.kind);
       final dark = _shade(roofC, 0.72), lit = _shade(roofC, 1.05);
       final order2 = List<int>.generate(n, (i) => i)
-        ..sort((a, c) => (base[a].dy + base[(a + 1) % n].dy)
-            .compareTo(base[c].dy + base[(c + 1) % n].dy));
+        ..sort(
+          (a, c) => (base[a].dy + base[(a + 1) % n].dy).compareTo(
+            base[c].dy + base[(c + 1) % n].dy,
+          ),
+        );
       for (final i in order2) {
         final j = (i + 1) % n;
-        final dx = sl.pts[j].dx - sl.pts[i].dx, dy = sl.pts[j].dy - sl.pts[i].dy;
+        final dx = sl.pts[j].dx - sl.pts[i].dx,
+            dy = sl.pts[j].dy - sl.pts[i].dy;
         final len = math.sqrt(dx * dx + dy * dy);
         if (len < 1e-6) continue;
         final nx = sl.sign > 0 ? dy / len : -dy / len;
@@ -1584,15 +1613,20 @@ class _IsoPainter extends CustomPainter {
     final cs = math.cos(yaw), sn = math.sin(yaw);
     // ground-plane directions: screen-right, and towards the viewer
     final rx = cs, ry = -sn, tx = sn, ty = cs;
-    final order = [
-      for (final f in s._figures)
-        if (inside == null ||
-            inside.any((pr) => pr.region.contains(f.norm)))
-          f,
-    ]..sort(
-        (a, b) => project(full, a.anchor.dx, a.anchor.dy, 0).dy
-            .compareTo(project(full, b.anchor.dx, b.anchor.dy, 0).dy),
-      );
+    final order =
+        [
+          for (final f in s._figures)
+            if (inside == null ||
+                inside.any((pr) => pr.region.contains(f.norm)))
+              f,
+        ]..sort(
+          (a, b) => project(
+            full,
+            a.anchor.dx,
+            a.anchor.dy,
+            0,
+          ).dy.compareTo(project(full, b.anchor.dx, b.anchor.dy, 0).dy),
+        );
     for (final f in order) {
       final h = f.height;
       final half = h * 0.07; // half the thickness, along the view direction
@@ -1824,11 +1858,12 @@ class _IsoPainter extends CustomPainter {
         _art(canvas, s._px);
       }
       canvas.restore();
-      if (focused)
+      if (focused) {
         canvas.drawPath(
           roof,
           Paint()..color = pal.accent.withValues(alpha: 0.22),
         );
+      }
       canvas.drawPath(roof, rim);
     }
   }

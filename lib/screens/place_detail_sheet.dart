@@ -128,10 +128,12 @@ class PlaceDetailSheet extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  (S.ar ? story.storyAr : story.story)
-                      .split('\n\n')
-                      .first
-                      .trim(),
+                  (S.ar ? story.teaserAr : story.teaser).isNotEmpty
+                      ? (S.ar ? story.teaserAr : story.teaser)
+                      : (S.ar ? story.storyAr : story.story)
+                            .split('\n\n')
+                            .first
+                            .trim(),
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(

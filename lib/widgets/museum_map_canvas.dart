@@ -381,6 +381,7 @@ class MuseumMapCanvas extends StatefulWidget {
     this.tilted = true,
     this.onFocusDone,
     this.padding = EdgeInsets.zero,
+    this.keepClear = const <Rect>[],
   });
 
   final GemMap map;
@@ -442,6 +443,11 @@ class MuseumMapCanvas extends StatefulWidget {
   /// Space covered by overlays (bars, chips, tabs): the map is fitted inside
   /// the rest.
   final EdgeInsets padding;
+
+  /// Screen-space rectangles (this widget's own coordinates) that overlay
+  /// controls sit on. Names slide out from under them and pins that are mostly
+  /// hidden behind them are left out until the map is panned clear again.
+  final List<Rect> keepClear;
 
   @override
   State<MuseumMapCanvas> createState() => _MuseumMapCanvasState();
@@ -510,6 +516,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   List<Float64List> _routeGeo = const [];
 
   List<({MapPlace place, int prio})> _sorted = const [];
+
+  /// Where the pins were drawn at the last build of the screen layer, so the
+  /// names (painted underneath) can keep out from under them.
+  List<Rect> _pinRects = const [];
   List<_LabelItem> _labelItems = const [];
   final Map<String, ({TextPainter fill, TextPainter halo})> _texts = {};
   bool? _darkSeen;
@@ -1438,6 +1448,11 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final full = _full();
     final zoom = math.max(1e-6, _scaleOf(widget.transform.value));
     final pins = _layoutPins(full, zoom);
+    final sel = widget.selected;
+    _pinRects = [
+      for (final c in pins)
+        _pinBox(c.place, c.screen, selected: c.place.id == sel?.id),
+    ];
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -1451,6 +1466,24 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   Offset _screenOf(Matrix4 full, Offset n, {double z = 0}) =>
       project(full, n.dx * _px.width, n.dy * _px.height, z);
 
+  /// The visible body of a pin whose tip is at [tip] (what MapPin draws).
+  static Rect _pinBox(MapPlace pl, Offset tip, {bool selected = false}) {
+    final d = MapPin.sizeFor(pl) * (selected ? 1.3 : 1.0);
+    return Rect.fromLTWH(tip.dx - d / 2, tip.dy - d * 1.32, d, d * 1.32);
+  }
+
+  /// Share (0..1) of [r] that lies under any of [covers].
+  static double _coveredShare(Rect r, List<Rect> covers) {
+    final area = r.width * r.height;
+    if (area <= 0) return 0;
+    var hidden = 0.0;
+    for (final c in covers) {
+      final i = r.intersect(c);
+      if (i.width > 0 && i.height > 0) hidden += i.width * i.height;
+    }
+    return hidden / area;
+  }
+
   // ── which pins to show (thinned so they never pile up) ─────────
   List<_Placed> _layoutPins(Matrix4 full, double zoom) {
     final rel = zoom / math.max(1e-6, _fit0);
@@ -1461,6 +1494,14 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       if (pl.category.isDense && !(denseVisible || c.prio <= 2)) continue;
       final s = _screenOf(full, pl.position, z: _groundZ(pl.position));
       if (!_onScreen(s)) continue;
+      // A pin that is mostly behind a map button cannot be read or tapped: wait
+      // until the map is panned clear of it. Selected, route-target and saved
+      // pins (prio <= 2) are never dropped.
+      if (c.prio > 2 &&
+          widget.keepClear.isNotEmpty &&
+          _coveredShare(_pinBox(pl, s), widget.keepClear) > 0.3) {
+        continue;
+      }
       if (c.prio > 2) {
         final sep = pl.category.isDense
             ? _pinSeparation * (rel >= 2.0 ? 0.8 : 0.62)
@@ -2174,6 +2215,8 @@ class _IsoPainter extends CustomPainter {
     final screen = Offset.zero & size;
     final safe = screen.deflate(6);
     final placed = <Rect>[];
+    final keepClear = s.widget.keepClear;
+    final blockers = <Rect>[...s._pinRects, ...keepClear];
     final zoomRel =
         _MuseumMapCanvasState._scaleOf(flat) / math.max(1e-6, s._fit0);
     final px = s._px;
@@ -2208,6 +2251,53 @@ class _IsoPainter extends CustomPainter {
             : 0.0;
         shift = Offset(dx, dy);
         rect = rect.shift(shift);
+      }
+      // Keep the name out from under pins and map buttons (they are drawn above
+      // it): slide it to the nearest free spot, else leave it out. A name the
+      // person asked for (selected / highlighted room) stays put as a last resort.
+      if (blockers.any((b) => b.overlaps(rect))) {
+        bool free(Rect r) =>
+            !blockers.any((b) => b.overlaps(r)) &&
+            (it.force || !placed.any((o) => o.overlaps(r))) &&
+            (rect.width >= safe.width ||
+                (r.left >= safe.left && r.right <= safe.right)) &&
+            (rect.height >= safe.height ||
+                (r.top >= safe.top && r.bottom <= safe.bottom));
+        final tries = <Offset>[];
+        for (final d in const [10.0, 20.0, 32.0, 48.0, 68.0]) {
+          for (final v in const [
+            Offset(0, -1),
+            Offset(0, 1),
+            Offset(1, 0),
+            Offset(-1, 0),
+            Offset(0.7, -0.7),
+            Offset(-0.7, -0.7),
+            Offset(0.7, 0.7),
+            Offset(-0.7, 0.7),
+          ]) {
+            tries.add(v * d);
+          }
+        }
+        for (final k in keepClear) {
+          if (!k.overlaps(rect)) continue;
+          tries
+            ..add(Offset(k.left - rect.right - 2, 0))
+            ..add(Offset(k.right - rect.left + 2, 0));
+        }
+        tries.sort((a, b) => a.distance.compareTo(b.distance));
+        Offset? nudge;
+        for (final o in tries) {
+          if (free(rect.shift(o))) {
+            nudge = o;
+            break;
+          }
+        }
+        if (nudge != null) {
+          shift += nudge;
+          rect = rect.shift(nudge);
+        } else if (!it.force) {
+          continue;
+        }
       }
       if (!it.force && placed.any((o) => o.overlaps(rect))) continue;
       placed.add(rect);

@@ -9,6 +9,16 @@ S=[]
 for m in re.finditer(r"MapBlock\('(\w+)', ([\d.]+), \[([^\]]*)\]",sec):
     v=[float(x) for x in m.group(3).split(',')]
     S.append(dict(kind=m.group(1),h=float(m.group(2))*u,pts=[(v[i]*W,v[i+1]*H) for i in range(0,len(v),2)]))
+# stair treads of the galleries map (kExtraSteps) are slabs too: _buildScene adds them with h * _stepScale
+STEP_SCALE=0.45
+g=open(os.path.join(os.path.dirname(os.path.abspath(__file__)),'..','lib','data','gem_floors.dart')).read()
+gs=g[g.index('const Map<String, List<MapStep>> kExtraSteps'):]
+gs=gs[gs.index("'main_galleries'"):]
+nxt=gs.find("\n  '",5)
+gs=gs[:nxt] if nxt>0 else gs
+for m in re.finditer(r"MapStep\(([\d.]+), \[([^\]]*)\]",gs):
+    v=[float(x) for x in m.group(2).split(',')]
+    S.append(dict(kind='step',h=float(m.group(1))*STEP_SCALE*u,pts=[(v[i]*W,v[i+1]*H) for i in range(0,len(v),2)]))
 def hull(p):
     p=sorted(set(p))
     if len(p)<3: return p

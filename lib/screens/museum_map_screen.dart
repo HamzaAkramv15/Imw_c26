@@ -652,10 +652,22 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
         ((b.width * _map.imageSize.width) /
                 (b.height * _map.imageSize.height)) <
             1.4;
+    // The control column sits at the *end* edge (the left one in Arabic), so the
+    // room kept free for it is on that side too.
+    final rtl = Directionality.of(context) == TextDirection.rtl;
+    final gutter = tall ? 60.0 : 12.0;
+    final screenW = MediaQuery.sizeOf(context).width;
+    // locate (46) + gap + zoom pill (89) + gap + fit (46), at end: 12, top: safe.top + 124
+    final controlsRect = Rect.fromLTWH(
+      rtl ? 12 : screenW - 12 - 46,
+      safe.top + 124,
+      46,
+      46 + 10 + 89 + 10 + 46,
+    ).inflate(6);
     final mapPadding = EdgeInsets.fromLTRB(
-      8,
+      rtl ? gutter : 8,
       safe.top + 112,
-      tall ? 60 : 12,
+      rtl ? 8 : gutter,
       safe.bottom + (galleries ? 128 : 84) + (_route != null ? 76 : 0),
     );
     final legs = _route?.legsOn(_map.id) ?? const <RouteLeg>[];
@@ -698,6 +710,7 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
                         if (mounted) setState(() => _focusPoint = null);
                       }),
                   padding: mapPadding,
+                  keepClear: [controlsRect],
                   onPlaceTap: _selectPlace,
                   onRegionTap: _onRegionTap,
                   onEmptyTap: () => setState(() {
@@ -1280,30 +1293,8 @@ class _SettingsSheet extends StatelessWidget {
               ),
               ListTile(
                 contentPadding: EdgeInsets.zero,
-                onTap: () => showCarvingsSheet(context),
-                leading: Icon(Icons.auto_awesome, color: p.gold),
-                title: Text(
-                  S.t('carvings'),
-                  style: TextStyle(
-                    fontFamily: 'Arial',
-                    fontWeight: FontWeight.w800,
-                    fontSize: 15,
-                    color: p.ink,
-                  ),
-                ),
-                subtitle: Text(
-                  S.t('carvings_hint'),
-                  style: TextStyle(
-                    fontFamily: 'Arial',
-                    fontSize: 12.5,
-                    color: p.muted,
-                  ),
-                ),
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
                 onTap: () => showAboutSheet(context),
-                leading: Icon(Icons.account_balance_outlined, color: p.gold),
+                leading: Icon(Icons.auto_stories_outlined, color: p.gold),
                 title: Text(
                   S.t('about_museum'),
                   style: TextStyle(

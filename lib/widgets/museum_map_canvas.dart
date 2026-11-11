@@ -44,9 +44,6 @@ const double _denseZoom = 1.2;
 /// Tap box of a pin (logical px). The pin's tip sits at the bottom centre.
 const double _tapW = 46, _tapH = 58;
 
-/// Pins closer than this on screen are thinned out (the important one stays).
-const double _pinSeparation = 34;
-
 /// Longest side (px) of the cached bitmap of the plan.
 const double _rasterMaxSide = 4096;
 
@@ -129,8 +126,15 @@ class _Slab {
     required this.height,
     required this.centroid,
     required this.sign,
+    required this.outer,
   });
   final String kind;
+
+  /// Per edge i (pts[i] -> pts[i+1]): true if it is a real side of the solid,
+  /// false if it is only a seam where two pieces of one concave solid meet (or
+  /// where a lower solid was cut away under a taller one). Only real sides get
+  /// a wall face.
+  final List<bool> outer;
   final List<Offset> norm; // 0..1, for hit-tests
   final List<Offset> pts; // map px
   final double height; // map px
@@ -241,18 +245,292 @@ bool _hullsOverlap(List<Offset> p, List<Offset> q) {
   return true;
 }
 
+
+// ── convex pieces ──────────────────────────────────────────────
+// The draw order of the solids (see _slabFront) is only exact for convex
+// footprints. A concave one (a U-shaped wall round a staircase) is cut into
+// convex pieces first, and a low solid that runs under a taller one (a tread
+// that crosses a wall strip) loses the part that is hidden under it.
+
+double _cross(Offset o, Offset a, Offset b) =>
+    (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
+
+double _area2(List<Offset> p) {
+  var s = 0.0;
+  for (var i = 0; i < p.length; i++) {
+    final a = p[i], b = p[(i + 1) % p.length];
+    s += a.dx * b.dy - b.dx * a.dy;
+  }
+  return s;
+}
+
+bool _isConvex(List<Offset> p) {
+  final n = p.length;
+  for (var i = 0; i < n; i++) {
+    if (_cross(p[i], p[(i + 1) % n], p[(i + 2) % n]) < -1e-6) return false;
+  }
+  return true;
+}
+
+bool _samePt(Offset a, Offset b) =>
+    (a.dx - b.dx).abs() < 1e-6 && (a.dy - b.dy).abs() < 1e-6;
+
+/// Ear-clipping triangulation of a counter-clockwise polygon (null on failure).
+List<List<int>>? _earClip(List<Offset> pts) {
+  final n = pts.length;
+  final idx = List<int>.generate(n, (i) => i);
+  final tris = <List<int>>[];
+  var guard = 0;
+  bool inTri(Offset p, Offset a, Offset b, Offset c) =>
+      _cross(a, b, p) >= -1e-9 &&
+      _cross(b, c, p) >= -1e-9 &&
+      _cross(c, a, p) >= -1e-9;
+  while (idx.length > 3 && guard++ < 10 * n * n) {
+    var found = false;
+    for (var k = 0; k < idx.length && !found; k++) {
+      final i0 = idx[(k + idx.length - 1) % idx.length];
+      final i1 = idx[k];
+      final i2 = idx[(k + 1) % idx.length];
+      final a = pts[i0], b = pts[i1], c = pts[i2];
+      if (_cross(a, b, c) <= 1e-9) continue;
+      var blocked = false;
+      for (final j in idx) {
+        if (j == i0 || j == i1 || j == i2) continue;
+        final q = pts[j];
+        if (_samePt(q, a) || _samePt(q, b) || _samePt(q, c)) continue;
+        if (inTri(q, a, b, c)) {
+          blocked = true;
+          break;
+        }
+      }
+      if (blocked) continue;
+      tris.add([i0, i1, i2]);
+      idx.removeAt(k);
+      found = true;
+    }
+    if (found) continue;
+    // no ear: drop a collinear vertex, else give up
+    var dropped = false;
+    for (var k = 0; k < idx.length; k++) {
+      final i0 = idx[(k + idx.length - 1) % idx.length];
+      final i1 = idx[k];
+      final i2 = idx[(k + 1) % idx.length];
+      if (_cross(pts[i0], pts[i1], pts[i2]).abs() <= 1e-9) {
+        idx.removeAt(k);
+        dropped = true;
+        break;
+      }
+    }
+    if (!dropped) return null;
+  }
+  if (idx.length == 3 &&
+      _cross(pts[idx[0]], pts[idx[1]], pts[idx[2]]) > 1e-9) {
+    tris.add([idx[0], idx[1], idx[2]]);
+  }
+  return tris;
+}
+
+class _SlabPiece {
+  _SlabPiece(this.kind, this.height, this.pts, this.outer, this.convex);
+  final String kind;
+  final double height;
+  final List<Offset> pts;
+  final List<bool> outer;
+  final bool convex;
+}
+
+/// [poly] as convex, counter-clockwise pieces. Falls back to the polygon itself
+/// (flagged non-convex) when it cannot be cut.
+List<({List<Offset> pts, List<bool> outer, bool convex})> _convexPieces(
+  List<Offset> poly,
+) {
+  final p = <Offset>[];
+  for (final o in poly) {
+    if (p.isEmpty || !_samePt(o, p.last)) p.add(o);
+  }
+  if (p.length > 1 && _samePt(p.first, p.last)) p.removeLast();
+  if (p.length < 3) return const [];
+  if (_area2(p) < 0) {
+    final r = p.reversed.toList();
+    p
+      ..clear()
+      ..addAll(r);
+  }
+  List<bool> all(int n) => List<bool>.filled(n, true);
+  if (_isConvex(p)) return [(pts: p, outer: all(p.length), convex: true)];
+  final tris = _earClip(p);
+  if (tris == null || tris.isEmpty) {
+    return [(pts: p, outer: all(p.length), convex: false)];
+  }
+  var ta = 0.0;
+  for (final t in tris) {
+    ta += _cross(p[t[0]], p[t[1]], p[t[2]]);
+  }
+  final pa = _area2(p);
+  if ((ta - pa).abs() > 1e-3 * pa.abs() + 1e-6) {
+    return [(pts: p, outer: all(p.length), convex: false)]; // not a simple outline
+  }
+  final pieces = [for (final t in tris) List<int>.of(t)];
+  var merged = true;
+  while (merged) {
+    merged = false;
+    outer:
+    for (var i = 0; i < pieces.length; i++) {
+      for (var j = i + 1; j < pieces.length; j++) {
+        final a = pieces[i], b = pieces[j];
+        for (var ai = 0; ai < a.length; ai++) {
+          final u = a[ai], v = a[(ai + 1) % a.length];
+          for (var bi = 0; bi < b.length; bi++) {
+            if (b[bi] == v && b[(bi + 1) % b.length] == u) {
+              final a2 = [...a.sublist(ai), ...a.sublist(0, ai)]; // u, v, ...
+              final b2 = [...b.sublist(bi), ...b.sublist(0, bi)]; // v, u, ...
+              final cand = [...a2.sublist(1), a2[0], ...b2.sublist(2)];
+              if (_isConvex([for (final k in cand) p[k]])) {
+                pieces[i] = cand;
+                pieces.removeAt(j);
+                merged = true;
+                break outer;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  final n0 = p.length;
+  return [
+    for (final pc in pieces)
+      (
+        pts: [for (final k in pc) p[k]],
+        outer: [
+          for (var t = 0; t < pc.length; t++)
+            (pc[(t + 1) % pc.length] - pc[t]) % n0 == 1,
+        ],
+        convex: true,
+      ),
+  ];
+}
+
+double _side(Offset p, Offset a, Offset b) =>
+    (b.dx - a.dx) * (p.dy - a.dy) - (b.dy - a.dy) * (p.dx - a.dx);
+
+/// Sutherland-Hodgman against one half-plane of the line a->b, carrying the
+/// "real side" flag of every edge (the new edge on the cut line is not real).
+(List<Offset>, List<bool>) _clipHalf(
+  List<Offset> poly,
+  List<bool> flags,
+  Offset a,
+  Offset b,
+  bool keepLeft,
+) {
+  final sg = keepLeft ? 1.0 : -1.0;
+  final out = <Offset>[];
+  final of = <bool>[];
+  final n = poly.length;
+  for (var i = 0; i < n; i++) {
+    final pp = poly[i], q = poly[(i + 1) % n];
+    final f = flags[i];
+    final sp = sg * _side(pp, a, b), sq = sg * _side(q, a, b);
+    final pin = sp >= 0, qin = sq >= 0;
+    if (pin && qin) {
+      out.add(pp);
+      of.add(f);
+    } else if (pin && !qin) {
+      final t = sp / (sp - sq);
+      out
+        ..add(pp)
+        ..add(Offset(pp.dx + (q.dx - pp.dx) * t, pp.dy + (q.dy - pp.dy) * t));
+      of
+        ..add(f)
+        ..add(false);
+    } else if (!pin && qin) {
+      final t = sp / (sp - sq);
+      out.add(Offset(pp.dx + (q.dx - pp.dx) * t, pp.dy + (q.dy - pp.dy) * t));
+      of.add(f);
+    }
+  }
+  return (out, of);
+}
+
+/// Convex [l] minus convex counter-clockwise [t], as convex pieces.
+List<({List<Offset> pts, List<bool> outer})> _subtractConvex(
+  List<Offset> l,
+  List<bool> lf,
+  List<Offset> t,
+) {
+  final res = <({List<Offset> pts, List<bool> outer})>[];
+  var rem = l, rf = lf;
+  for (var i = 0; i < t.length; i++) {
+    final a = t[i], b = t[(i + 1) % t.length];
+    final o = _clipHalf(rem, rf, a, b, false);
+    if (o.$1.length >= 3 && _area2(o.$1).abs() > 1.0) {
+      res.add((pts: o.$1, outer: o.$2));
+    }
+    final r = _clipHalf(rem, rf, a, b, true);
+    rem = r.$1;
+    rf = r.$2;
+    if (rem.length < 3) break;
+  }
+  return res;
+}
+
+/// Every low solid loses the part that lies under a taller one: that part can
+/// never be seen (the taller roof covers it) and, left in, it makes the two
+/// impossible to put in a correct back-to-front order.
+List<_SlabPiece> _cutUnderTaller(List<_SlabPiece> all) {
+  final out = <_SlabPiece>[];
+  final bounds = [for (final s in all) _boundsOf(s.pts)];
+  for (var oi = 0; oi < all.length; oi++) {
+    final o = all[oi];
+    var pcs = [(pts: o.pts, outer: o.outer)];
+    if (o.convex) {
+      for (var ti = 0; ti < all.length; ti++) {
+        final t = all[ti];
+        if (!t.convex || t.height <= o.height + 0.5) continue;
+        if (!bounds[oi].overlaps(bounds[ti])) continue;
+        final tp = _area2(t.pts) >= 0 ? t.pts : t.pts.reversed.toList();
+        final next = <({List<Offset> pts, List<bool> outer})>[];
+        for (final pc in pcs) {
+          if (_hullsOverlap(pc.pts, tp)) {
+            next.addAll(_subtractConvex(pc.pts, pc.outer, tp));
+          } else {
+            next.add(pc);
+          }
+        }
+        pcs = next;
+      }
+    }
+    for (final pc in pcs) {
+      out.add(_SlabPiece(o.kind, o.height, pc.pts, pc.outer, o.convex));
+    }
+  }
+  return out;
+}
+
 /// Which of two slabs is nearer the viewer. `(vx, vy)` points from the scene
 /// towards the viewer, in map space. Returns 1 if [b] must be painted after
 /// [a] (b is in front), -1 if before, 0 if the footprints don't separate.
 ///
-/// Two disjoint convex footprints are always split by one of their edges; the
-/// slab on the viewer's side of that line is the nearer one. A centroid sort
+/// Two disjoint convex footprints are split by a line along one of their edges;
+/// the slab on the viewer's side of that line is the nearer one. A centroid sort
 /// gets this wrong for long thin shapes (wall strips beside cases).
+///
+/// Two things made stairs flicker "at certain angles", and both are handled:
+///  * Several edges can separate two footprints. An edge that runs exactly
+///    along the viewing direction says nothing about who is in front (n.v = 0),
+///    so the first separating edge must not win: the most decisive one does.
+///  * A tread is modelled starting a hair INSIDE the wall it climbs beside, so
+///    the footprints overlap by a pixel or two and no edge separates them. The
+///    order then fell back to centroid depth and the tread was painted over the
+///    wall. The test is therefore repeated allowing a growing overlap.
 int _slabFront(_Slab a, _Slab b, double vx, double vy) {
-  double? sep(_Slab p, _Slab q) {
+  // Signed "nearness" of q relative to p: > 0 when q is nearer the viewer.
+  // Of all edges of p that split q off, the one most square-on to the view.
+  double? sep(_Slab p, _Slab q, double tol) {
     final h = p.hull, n = h.length;
     if (n < 3) return null;
     final sg = p.hullSign;
+    double? best;
     for (var i = 0; i < n; i++) {
       final a0 = h[i], a1 = h[(i + 1) % n];
       final ex = a1.dx - a0.dx, ey = a1.dy - a0.dy;
@@ -261,20 +539,31 @@ int _slabFront(_Slab a, _Slab b, double vx, double vy) {
       final nx = sg * ey / len, ny = -sg * ex / len;
       var outside = true;
       for (final o in q.hull) {
-        if ((o.dx - a0.dx) * nx + (o.dy - a0.dy) * ny < -0.05) {
+        if ((o.dx - a0.dx) * nx + (o.dy - a0.dy) * ny < -tol) {
           outside = false;
           break;
         }
       }
-      if (outside) return nx * vx + ny * vy;
+      if (!outside) continue;
+      final d = nx * vx + ny * vy;
+      if (best == null || d.abs() > best.abs()) best = d;
     }
-    return null;
+    return best;
   }
 
-  final d = sep(a, b); // b lies along n from a: b is nearer iff n.v > 0
-  if (d != null && d.abs() > 1e-4) return d > 0 ? 1 : -1;
-  final e = sep(b, a); // a lies along n from b: a is nearer iff n.v > 0
-  if (e != null && e.abs() > 1e-4) return e > 0 ? -1 : 1;
+  for (final tol in const [0.05, 1.5, 3.0, 6.0]) {
+    final d = sep(a, b, tol); // b lies along n from a: b is nearer iff n.v > 0
+    var e = sep(b, a, tol); // a lies along n from b: a is nearer iff n.v > 0
+    if (e != null) e = -e;
+    double? x;
+    for (final c in [d, e]) {
+      if (c != null && (x == null || c.abs() > x.abs())) x = c;
+    }
+    if (x != null && x.abs() > 1e-4) return x > 0 ? 1 : -1;
+  }
+  // Footprints genuinely overlap (a tread inside a wall frame): the taller solid
+  // is painted last so it hides the lower one where they meet.
+  if ((a.height - b.height).abs() > 0.5) return b.height > a.height ? 1 : -1;
   return 0;
 }
 
@@ -672,32 +961,16 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     }
     _prisms = prisms;
     _ground = ground;
-    final slabs = <_Slab>[];
+    final raw = <_SlabPiece>[];
     void addSlab(String kind, double h, List<double> v) {
       if (v.length < 6) return;
-      final norm = <Offset>[
-        for (var i = 0; i + 1 < v.length; i += 2) Offset(v[i], v[i + 1]),
+      final poly = <Offset>[
+        for (var i = 0; i + 1 < v.length; i += 2)
+          Offset(v[i] * px.width, v[i + 1] * px.height),
       ];
-      final pts = [
-        for (final o in norm) Offset(o.dx * px.width, o.dy * px.height),
-      ];
-      var s = 0.0, cx = 0.0, cy = 0.0;
-      for (var k = 0; k < pts.length; k++) {
-        final a = pts[k], b = pts[(k + 1) % pts.length];
-        s += a.dx * b.dy - b.dx * a.dy;
-        cx += a.dx;
-        cy += a.dy;
+      for (final pc in _convexPieces(poly)) {
+        raw.add(_SlabPiece(kind, h * u, pc.pts, pc.outer, pc.convex));
       }
-      slabs.add(
-        _Slab(
-          kind: kind,
-          norm: norm,
-          pts: pts,
-          height: h * u,
-          centroid: Offset(cx / pts.length, cy / pts.length),
-          sign: s >= 0 ? 1 : -1,
-        ),
-      );
     }
 
     for (final b in kBlocks[widget.map.id] ?? const <MapBlock>[]) {
@@ -711,6 +984,26 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     }
     for (final st in kExtraSteps[widget.map.id] ?? const <MapStep>[]) {
       addSlab('step', st.h * _stepScale, st.pts);
+    }
+    final slabs = <_Slab>[];
+    for (final pc in _cutUnderTaller(raw)) {
+      final pts = pc.pts;
+      var cx = 0.0, cy = 0.0;
+      for (final o in pts) {
+        cx += o.dx;
+        cy += o.dy;
+      }
+      slabs.add(
+        _Slab(
+          kind: pc.kind,
+          norm: [for (final o in pts) Offset(o.dx / px.width, o.dy / px.height)],
+          pts: pts,
+          height: pc.height,
+          centroid: Offset(cx / pts.length, cy / pts.length),
+          sign: _signOf(pts),
+          outer: pc.outer,
+        ),
+      );
     }
     // flat floors that no region covers (footprint, halls, landings, display zones)
     final extra = <(String, Path)>[];
@@ -1489,6 +1782,17 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final rel = zoom / math.max(1e-6, _fit0);
     final denseVisible = widget.showAllPins || rel >= _denseZoom;
     final out = <_Placed>[];
+    final placedBoxes = <Rect>[];
+    // the "you are here" marker is drawn under the pins but must stay readable
+    Rect? youBox;
+    if (widget.originMapId == widget.map.id && widget.originPos != null) {
+      final y = _screenOf(
+        full,
+        widget.originPos!,
+        z: _groundZ(widget.originPos!),
+      );
+      youBox = Rect.fromCenter(center: y, width: 40, height: 40);
+    }
     for (final c in _sorted) {
       final pl = c.place;
       if (pl.category.isDense && !(denseVisible || c.prio <= 2)) continue;
@@ -1503,18 +1807,28 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         continue;
       }
       if (c.prio > 2) {
-        final sep = pl.category.isDense
-            ? _pinSeparation * (rel >= 2.0 ? 0.8 : 0.62)
-            : _pinSeparation;
-        var clash = false;
-        for (final o in out) {
-          if ((o.screen - s).distance < sep) {
-            clash = true;
-            break;
+        // Compare the pins' real on-screen bodies (not just their tips): the
+        // body rises ~1.3x its width above the tip, so two pins whose tips are
+        // far enough apart can still sit on top of each other, depending on the
+        // rotation and tilt. A small gap keeps neighbours readable.
+        final gap = pl.category.isDense ? (rel >= 2.0 ? 1.0 : 3.0) : 4.0;
+        final box = _pinBox(pl, s).inflate(gap / 2);
+        var clash = youBox != null && box.overlaps(youBox);
+        if (!clash) {
+          for (final o in placedBoxes) {
+            if (box.overlaps(o)) {
+              clash = true;
+              break;
+            }
           }
         }
         if (clash) continue;
       }
+      placedBoxes.add(
+        _pinBox(pl, s, selected: pl.id == widget.selected?.id).inflate(
+          (pl.category.isDense ? 0.5 : 2.0),
+        ),
+      );
       out.add((place: pl, screen: s, prio: c.prio));
     }
     return out;
@@ -1795,6 +2109,7 @@ class _IsoPainter extends CustomPainter {
           ),
         );
       for (final i in order2) {
+        if (!sl.outer[i]) continue; // a seam inside one solid, not a wall
         final j = (i + 1) % n;
         final dx = sl.pts[j].dx - sl.pts[i].dx,
             dy = sl.pts[j].dy - sl.pts[i].dy;
@@ -1817,14 +2132,29 @@ class _IsoPainter extends CustomPainter {
       }
       final roof = Path()..addPolygon(top, true);
       canvas.drawPath(roof, Paint()..color = roofC);
+      final seamed = sl.outer.contains(false);
+      if (seamed) {
+        // hide the hairline between the pieces of one concave solid
+        final seam = Paint()
+          ..color = roofC
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.9;
+        for (var i = 0; i < n; i++) {
+          if (!sl.outer[i]) canvas.drawLine(top[i], top[(i + 1) % n], seam);
+        }
+      }
       if (sl.kind != 'step' && sl.kind != 'rwall') {
-        canvas.drawPath(
-          roof,
-          Paint()
-            ..color = pal.rim.withValues(alpha: 0.35)
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 0.8,
-        );
+        final rimP = Paint()
+          ..color = pal.rim.withValues(alpha: 0.35)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 0.8;
+        if (!seamed) {
+          canvas.drawPath(roof, rimP);
+        } else {
+          for (var i = 0; i < n; i++) {
+            if (sl.outer[i]) canvas.drawLine(top[i], top[(i + 1) % n], rimP);
+          }
+        }
       }
     }
   }

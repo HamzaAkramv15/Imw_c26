@@ -4,9 +4,10 @@ import 'package:flutter/material.dart';
 
 import '../data/gem_extras.dart';
 import '../data/gem_map_data.dart';
-import '../data/gem_paths.dart';
+import '../data/gem_nav.dart';
 import '../data/gem_regions.dart';
 import '../data/gem_stories.dart';
+import '../i18n/lang.dart';
 import '../i18n/strings.dart';
 import '../models/map_models.dart';
 import '../services/route_finder.dart';
@@ -39,13 +40,7 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
   final ToastController _toast = ToastController();
 
   /// One graph for every map, joined by doors / stairs / lifts.
-  late final MuseumGraph _graph = MuseumGraph(
-    allMaps,
-    portals: kPortals,
-    stairEdges: kStairEdges,
-    redirects: kRouteRedirects,
-    placeFloors: kPlaceFloor,
-  );
+  late final MuseumGraph _graph = MuseumGraph(allMaps);
 
   /// Each map keeps its own zoom / position, so coming back to it finds it
   /// exactly as you left it.
@@ -167,29 +162,29 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
   }
 
   void _restore() {
-    final map = allMaps[Store['map']];
+    final map = allMaps[Store.get('map')];
     if (map != null) {
       _map = map;
       _regions = regionsFor(map.id);
     }
-    final pinned = Store['pinned'];
+    final pinned = Store.get('pinned');
     if (pinned is List) {
       _pinned.addAll([
         for (final id in pinned)
           if (id is String && placeById(id) != null) id,
       ]);
     }
-    final origin = Store['origin'];
+    final origin = Store.get('origin');
     if (origin is String && _graph.positionOf(origin) != null) {
       _originNode = origin;
     }
-    final q = Store['quarter'];
+    final q = Store.get('quarter');
     if (q is Map) {
       q.forEach((k, v) {
         if (k is String && v is int) _quarter[k] = v;
       });
     }
-    final views = Store['views'];
+    final views = Store.get('views');
     if (views is Map) {
       views.forEach((k, v) {
         final ctl = _views[k];
@@ -201,8 +196,8 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
       });
     }
     // bring the route (or tour) back once the first frame is up
-    final target = Store['routeTarget'];
-    final tour = Store['tour'];
+    final target = Store.get('routeTarget');
+    final tour = Store.get('tour');
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || _originNode == null) return;
       if (tour is List && tour.isNotEmpty) {
@@ -547,7 +542,7 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
     _focusRoute(t.route, quiet);
     if (!quiet && t.skipped.isNotEmpty) {
       _toast.show(
-        S.t('skipped', x: t.skipped.map(S.placeId).join('، ')),
+        S.t('skipped', x: S.list(t.skipped.map(S.placeId))),
         icon: Icons.block,
       );
     }
@@ -568,11 +563,11 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
     _routeAnim.reset();
   }
 
-  void _toggleStepFree() {
-    _app.setAvoidStairs(!_app.avoidStairs);
+  void _setStepFree(bool v) {
+    _app.setAvoidStairs(v);
     _toast.show(
-      S.t(_app.avoidStairs ? 'step_free_on' : 'step_free_off'),
-      icon: _app.avoidStairs ? Icons.accessible_forward : Icons.directions_walk,
+      S.t(v ? 'step_free_on' : 'step_free_off'),
+      icon: v ? Icons.accessible_forward : Icons.directions_walk,
     );
   }
 
@@ -594,11 +589,7 @@ class _MuseumMapScreenState extends State<MuseumMapScreen>
         },
         onToggleStairs: (v) {
           Navigator.of(context).pop();
-          _app.setAvoidStairs(v);
-          _toast.show(
-            S.t(v ? 'step_free_on' : 'step_free_off'),
-            icon: v ? Icons.accessible_forward : Icons.directions_walk,
-          );
+          _setStepFree(v);
         },
       ),
     );
@@ -1246,10 +1237,23 @@ class _SettingsSheet extends StatelessWidget {
               const SizedBox(height: 18),
               GemEyebrow(S.t('language')),
               const SizedBox(height: 8),
-              seg<bool>(
-                value: app.isArabic,
-                items: const [(false, 'English'), (true, 'العربية')],
-                onChanged: app.setArabic,
+              // eight languages: a wrap of chips, each in its own script
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final l in AppLang.values)
+                    ChoiceChip(
+                      label: Text(l.nativeName, style: TextStyle(locale: l.locale, fontWeight: FontWeight.w700)),
+                      selected: app.lang == l,
+                      onSelected: (_) => app.setLang(l),
+                      selectedColor: p.accent,
+                      labelStyle: TextStyle(color: app.lang == l ? p.onAccent : p.ink),
+                      backgroundColor: p.surface,
+                      side: BorderSide(color: p.line),
+                      showCheckmark: false,
+                    ),
+                ],
               ),
               const SizedBox(height: 18),
               GemEyebrow(S.t('appearance')),

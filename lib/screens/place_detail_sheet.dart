@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/gem_extras.dart';
+import '../data/gem_nav.dart';
 import '../data/gem_stories.dart';
 import '../i18n/strings.dart';
 import '../models/map_models.dart';
@@ -44,8 +45,7 @@ class PlaceDetailSheet extends StatelessWidget {
     final desc = S.description(place);
     final story = storyFor(place.id);
     final chips = [
-      if (floor != null && floor > 0)
-        S.floorName(floor).replaceFirst(RegExp(r'^the |^'), ''),
+      if (floor != null && floor > 0) S.floorLabel(floor),
       ...place.chips
           .where(
             (c) =>
@@ -82,7 +82,7 @@ class PlaceDetailSheet extends StatelessWidget {
                           style: TextStyle(
                             fontFamily: 'Arial',
                             fontSize: 11,
-                            letterSpacing: 1.8,
+                            letterSpacing: S.tracking(1.8),
                             color: p.gold,
                             fontWeight: FontWeight.w700,
                           ),
@@ -117,7 +117,7 @@ class PlaceDetailSheet extends StatelessWidget {
               const SizedBox(height: 12),
               if (story != null) ...[
                 Text(
-                  S.ar ? story.hookAr : story.hook,
+                  story.hookIn(S.lang),
                   style: TextStyle(
                     fontSize: 21,
                     height: 1.25,
@@ -128,9 +128,9 @@ class PlaceDetailSheet extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  (S.ar ? story.teaserAr : story.teaser).isNotEmpty
-                      ? (S.ar ? story.teaserAr : story.teaser)
-                      : (S.ar ? story.storyAr : story.story)
+                  story.teaserIn(S.lang).isNotEmpty
+                      ? story.teaserIn(S.lang)
+                      : story.storyIn(S.lang)
                             .split('\n\n')
                             .first
                             .trim(),

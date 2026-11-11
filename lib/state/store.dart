@@ -6,6 +6,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// `Store.init()` is awaited in `main()` before anything reads from it, so the
 /// first frame already shows the restored language, theme, pins, map and route.
 class Store {
+  Store._();
+
   static SharedPreferences? _prefs;
   static Map<String, dynamic> _data = {};
   static const _key = 'gem_state_v1';
@@ -20,7 +22,8 @@ class Store {
     }
   }
 
-  dynamic operator [](String k) => _data[k];
+  /// The saved value for [key], or null.
+  static Object? get(String key) => _data[key];
 
   static void put(Map<String, dynamic> values) {
     _data.addAll(values);

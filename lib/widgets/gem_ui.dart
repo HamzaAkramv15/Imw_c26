@@ -65,7 +65,8 @@ class GemEyebrow extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Text(
     text.toUpperCase(),
-    style: TextStyle(fontFamily: 'Arial', fontSize: 11, letterSpacing: 1.6, color: context.pal.gold, fontWeight: FontWeight.w700),
+    // scripts without capitals get a slightly larger size instead of tracking
+    style: TextStyle(fontFamily: 'Arial', fontSize: S.tracking(1) == 0 ? 12.5 : 11, letterSpacing: S.tracking(1.6), color: context.pal.gold, fontWeight: FontWeight.w700),
   );
 }
 

@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
+import 'i18n/lang.dart';
 import 'screens/museum_map_screen.dart';
 import 'state/app_state.dart';
 import 'theme.dart';
@@ -10,18 +12,20 @@ class GemNavigatorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // Rebuilds when language / appearance flips (RTL, LTR, light, dark).
+    final app = AppState.instance;
     return ListenableBuilder(
-      listenable: AppState.instance,
+      listenable: app,
       builder: (context, _) => MaterialApp(
         title: 'GEM Navigator',
         debugShowCheckedModeBanner: false,
         theme: GemTheme.light,
         darkTheme: GemTheme.dark,
-        themeMode: AppState.instance.themeMode,
-        builder: (context, child) => Directionality(
-          textDirection: AppState.instance.isArabic ? TextDirection.rtl : TextDirection.ltr,
-          child: child!,
-        ),
+        themeMode: app.themeMode,
+        // The locale picks the text direction, the fonts (Han characters are
+        // drawn differently in Japanese and Chinese) and the built-in texts.
+        locale: app.lang.locale,
+        supportedLocales: [for (final l in AppLang.values) l.locale],
+        localizationsDelegates: GlobalMaterialLocalizations.delegates,
         home: const MuseumMapScreen(),
       ),
     );

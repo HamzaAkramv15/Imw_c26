@@ -1,5 +1,17 @@
 import 'package:flutter/material.dart';
 
+/// Even-odd test: whether [p] lies inside [poly].
+bool pointInPolygon(Offset p, List<Offset> poly) {
+  var inside = false;
+  for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+    final a = poly[i], b = poly[j];
+    if ((a.dy > p.dy) != (b.dy > p.dy) && p.dx < (b.dx - a.dx) * (p.dy - a.dy) / (b.dy - a.dy) + a.dx) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
 /// Every kind of marker that appears on the GEM maps.
 enum PlaceCategory {
   gallery,
@@ -50,31 +62,7 @@ enum PlaceGlyph {
 }
 
 extension PlaceCategoryX on PlaceCategory {
-  /// Singular name, shown in the detail sheet and search.
-  String get label => switch (this) {
-    PlaceCategory.gallery => 'Gallery',
-    PlaceCategory.attraction => 'Attraction',
-    PlaceCategory.restaurant => 'Food',
-    PlaceCategory.shop => 'Retail shop',
-    PlaceCategory.facility => 'Service',
-    PlaceCategory.parking => 'Parking',
-    PlaceCategory.garden => 'Garden',
-    PlaceCategory.building => 'Building',
-    PlaceCategory.entrance => 'Entrance',
-  };
-
-  /// Plural name, used by the filter pills.
-  String get filterLabel => switch (this) {
-    PlaceCategory.gallery => 'Galleries',
-    PlaceCategory.attraction => 'Attractions',
-    PlaceCategory.restaurant => 'Food',
-    PlaceCategory.shop => 'Shops',
-    PlaceCategory.facility => 'Services',
-    PlaceCategory.parking => 'Parking',
-    PlaceCategory.garden => 'Gardens',
-    PlaceCategory.building => 'Buildings',
-    PlaceCategory.entrance => 'Entrances',
-  };
+  // Names: S.category / S.filter (lib/i18n), in every language.
 
   /// Icon used when a place doesn't set its own `glyph`.
   PlaceGlyph get glyph => switch (this) {
@@ -142,7 +130,6 @@ class MapPlace {
     this.description,
     this.chips = const [],
     this.linkedMapId,
-    this.autoConnect = true,
   });
 
   final String id;
@@ -166,9 +153,6 @@ class MapPlace {
   /// Opens another map from the detail sheet.
   final String? linkedMapId;
 
-  /// Link this place to the nearest junction for routing.
-  final bool autoConnect;
-
   PlaceGlyph get effectiveGlyph => glyph ?? kNameGlyphs[name] ?? category.glyph;
 }
 
@@ -182,26 +166,23 @@ class GemMap {
     required this.imageSize,
     required this.places,
     required this.entranceId,
-    this.junctions = const {},
-    this.edges = const [],
   });
 
   final String id;
   final String title;
   final String shortTitle;
 
-  /// Path of the vector map (`assets/maps/*.svg`). Its viewBox is exactly
-  /// [imageSize], so every coordinate can be read straight off the artwork.
+  /// Path of the vector map (`assets/maps/dark/*.svg`, recoloured at load time).
+  /// Its viewBox is exactly [imageSize], so every coordinate can be read
+  /// straight off the artwork. (`assets/maps/light/` holds the original plan
+  /// colours; only the tools read those.)
   final String asset;
 
   /// Size of the SVG viewBox in its own units (same numbers the PNGs had).
   final Size imageSize;
   final List<MapPlace> places;
   final String entranceId;
-  final Map<String, Offset> junctions;
-  final List<(String, String)> edges;
 
-  double get aspectRatio => imageSize.width / imageSize.height;
 
   MapPlace? placeById(String id) {
     for (final p in places) {
@@ -253,17 +234,7 @@ class MapRegion {
   final String? group;
   final bool showLabel;
 
-  bool contains(Offset p) {
-    var inside = false;
-    for (var i = 0, j = points.length - 1; i < points.length; j = i++) {
-      final a = points[i], b = points[j];
-      if ((a.dy > p.dy) != (b.dy > p.dy) &&
-          p.dx < (b.dx - a.dx) * (p.dy - a.dy) / (b.dy - a.dy) + a.dx) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
+  bool contains(Offset p) => pointInPolygon(p, points);
 
   double get area {
     var s = 0.0;
@@ -293,14 +264,13 @@ enum LabelStyle { road, theme, note }
 class MapLabel {
   const MapLabel(
     this.text,
-    this.textAr,
     this.position, {
     this.style = LabelStyle.note,
     this.rotation = 0,
     this.minZoom = 0,
   });
+  /// English text; translated by name (S.label).
   final String text;
-  final String textAr;
   final Offset position;
   final LabelStyle style;
 
@@ -312,20 +282,76 @@ class MapLabel {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  Portals: the links between maps (doors, stairs, lifts)
+//  Navigation: the walkable graph (generated, lib/data/gem_nav.dart),
+//  doors, and the portals that join maps and levels
 // ═══════════════════════════════════════════════════════════════
 
-enum PortalKind { door, stairs, lift }
+/// A routing node: a place (on the floor in front of its pin), a door or a waypoint.
+@immutable
+class NavNode {
+  const NavNode(this.mapId, this.position);
+  final String mapId;
+
+  /// Normalised (0..1) position on [mapId].
+  final Offset position;
+}
+
+/// A walkable connection between two nodes of one map, laid along the floor.
+@immutable
+class NavEdge {
+  const NavEdge(this.a, this.b, this.via, {this.stairs = false});
+  final String a;
+  final String b;
+
+  /// Bend points from [a] to [b], normalised.
+  final List<Offset> via;
+
+  /// Climbs treads drawn on the plan (never part of a step-free route).
+  final bool stairs;
+}
+
+/// A doorway: a gap in a wall that routes pass through. [a]–[b] spans the
+/// opening (normalised). `verified: false` marks an opening the plan does not
+/// draw, placed where the plan's aisles meet the wall.
+@immutable
+/// What an opening in a wall is, as far as the plan shows.
+///   door: a doorway in a wall;  passage: a stretch the plan leaves without a wall.
+enum DoorKind { door, passage }
+
+/// An opening: the walls (drawn and in the routing grid) are open within
+/// half of |a - b| of its centre.
+class MapDoor {
+  const MapDoor(this.id, this.mapId, this.a, this.b, {this.kind = DoorKind.door, this.verified = true});
+  final String id;
+  final String mapId;
+  final Offset a;
+  final Offset b;
+  final DoorKind kind;
+  final bool verified;
+
+  Offset get center => Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
+}
+
+/// How a portal is crossed. A travelator is the moving walkway beside the
+/// Grand Staircase.
+enum PortalKind { door, stairs, lift, travelator }
 
 @immutable
 class Portal {
-  const Portal(this.a, this.b, this.kind, {this.meters = 30});
+  const Portal(this.a, this.b, this.kind, {this.meters = 30, this.stepFreeVerified = true});
 
-  /// Node ids (places or junctions) on each side. May be on different maps.
+  /// Node ids (places or doors) on each side. May be on different maps.
   final String a;
   final String b;
   final PortalKind kind;
 
   /// Walking length of the link (stairs are further penalised by the router).
   final double meters;
+
+  /// False when no reliable source confirms wheelchair use (the travelator):
+  /// such a portal is left out of step-free routes.
+  final bool stepFreeVerified;
+
+  /// Usable on a step-free (wheelchair) route.
+  bool get stepFree => kind != PortalKind.stairs && stepFreeVerified;
 }

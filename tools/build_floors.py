@@ -28,7 +28,7 @@ Tutankhamun Galleries (viewBox 1389x962)
 import sys, os, math, re
 sys.path.insert(0, os.path.dirname(__file__))
 from svgutil import load_paths, subpaths
-from shapely.geometry import LineString, Polygon, MultiPolygon, Point
+from shapely.geometry import LineString, Polygon
 from shapely.ops import unary_union
 from shapely.geometry.polygon import orient
 
@@ -295,8 +295,8 @@ def main():
            "//   * kExtraBlocks - Tutankhamun cases that were never extracted.",
            "//   * kExtraSteps  - stair flights (the plans' hatch strokes), drawn as treads.",
            "//",
-           "// Same normalised (0..1) space as MapPlace.position. Nothing here is routed: kPortals,",
-           "// kStairEdges, kPinLinks and the paths are untouched.",
+           "// Same normalised (0..1) space as MapPlace.position. The routing graph (gem_nav.dart)",
+           "// is built from these floors and treads by tools/build_nav.py.",
            "import 'gem_blocks.dart';",
            "",
            "class MapFloor {",

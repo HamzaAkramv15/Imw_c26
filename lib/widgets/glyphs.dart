@@ -21,39 +21,6 @@ const Map<String, List<(bool, String)>> kGlyphs = {
 };
 
 /// What each sign meant to the ancient Egyptians (used by the carvings sheet).
-const Map<String, List<String>> kGlyphMeaning = {
-  'ankh': ['Life', 'الحياة'],
-  'djed': ['Stability', 'الثبات'],
-  'wedjat': ['Prosperity & health (Eye of Horus)', 'الازدهار والصحة (عين حورس)'],
-  'was': ['Power & dominion', 'القوة والسلطان'],
-  'scarab': ['Rebirth (Khepri, the rising sun)', 'البعث والتجدد (خبري، شمس الفجر)'],
-  'lotus': ['Creation & rebirth', 'الخلق والتجدد'],
-  'feather': ['Truth & balance (Maat)', 'الحقيقة والعدل (ماعت)'],
-  'cobra': ['Forever (djet)', 'إلى الأبد (جت)'],
-  'shen': ['Eternity & protection', 'الخلود والحماية'],
-  'sun': ['The eternal cycle (neheh)', 'دورة الأبد (نحح)'],
-  'neb': ['All, every, lord', 'كل، جميع، سيّد'],
-  'bread': ['Offering', 'قربان'],
-};
-
-/// One wish carved along each side of the slab, as a sequence of signs.
-class FriezeLine {
-  const FriezeLine(this.signs, this.en, this.ar);
-  final List<String> signs;
-  final String en;
-  final String ar;
-}
-
-const FriezeLine kFriezeTop = FriezeLine(['ankh', 'djed', 'wedjat'], 'Life · Stability · Prosperity & Health', 'الحياة · الثبات · الازدهار والصحة');
-const FriezeLine kFriezeRight = FriezeLine(['scarab', 'lotus', 'feather'], 'Rebirth · Creation · Truth', 'البعث · الخلق · الحق');
-const FriezeLine kFriezeBottom = FriezeLine(['cobra', 'shen', 'sun'], 'Forever and ever', 'إلى الأبد وما بعد الأبد');
-const FriezeLine kFriezeLeft = FriezeLine(['ankh', 'neb', 'cobra'], 'Given life, for all eternity', 'مُنِحَ الحياة لكل الأبد');
-
-/// The two sentences engraved in the slab margins.
-const String kCaptionTopEn = 'MAY YOU BE GIVEN LIFE, STABILITY, PROSPERITY AND HEALTH';
-const String kCaptionTopAr = 'مُنِحتَ الحياةَ والثباتَ والازدهارَ والصحةَ';
-const String kCaptionBottomEn = 'FOREVER AND EVER · GIVEN EVERLASTING LIFE FOR ALL ETERNITY';
-const String kCaptionBottomAr = 'إلى الأبد وما بعد الأبد · مُنِحَ الحياة الخالدة لكل الأبد';
 
 final Map<String, List<(bool, Path)>> _cache = {};
 

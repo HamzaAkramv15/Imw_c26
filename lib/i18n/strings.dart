@@ -1,221 +1,156 @@
 import '../data/gem_extras.dart';
 import '../data/gem_map_data.dart';
+import '../data/gem_regions.dart';
 import '../models/map_models.dart';
 import '../services/route_finder.dart';
 import '../state/app_state.dart';
+import 'lang.dart';
+import 'translations.dart';
 
-/// All user-visible text. English is the source of truth; Arabic falls back
-/// to English wherever a translation is missing, so nothing ever shows blank.
+/// All user-visible text, in the language chosen in the settings.
+/// English is the source of truth: anything without a translation falls back
+/// to English, so nothing ever shows blank (test/i18n_test.dart keeps the
+/// tables complete).
 class S {
   S._();
 
-  static bool get ar => AppState.instance.isArabic;
+  static AppLang get lang => AppState.instance.lang;
 
-  static const Map<String, List<String>> _t = {
-    'app_title': ['GRAND EGYPTIAN MUSEUM', 'المتحف المصري الكبير'],
-    'search_hint': ['Search museum…', 'ابحث في المتحف…'],
-    'search_tooltip': ['Search museum', 'بحث'],
-    'no_results': ['No results', 'لا توجد نتائج'],
-    'all': ['All', 'الكل'],
-    'pin': ['Pin', 'تثبيت'],
-    'pinned': ['Pinned', 'مثبّت'],
-    'start_route': ['Start route', 'ابدأ المسار'],
-    'routing': ['Routing…', 'جارٍ التوجيه…'],
-    'open_plan': ['Open plan', 'افتح المخطط'],
-    'im_here': ["I'm here", 'أنا هنا'],
-    'you_are_here': ['You are here', 'أنت هنا'],
-    'location_set': ['Location set: {x}', 'تم ضبط موقعك: {x}'],
-    'no_path': ['No path found to this location.', 'لا يوجد مسار إلى هذا المكان.'],
-    'no_step_free': ['No step-free route found.', 'لا يوجد مسار بدون سلالم.'],
-    'already_here': ['You are already here.', 'أنت هنا بالفعل.'],
-    'route_to': ['Route to {x}', 'المسار إلى {x}'],
-    'directions': ['Directions', 'الاتجاهات'],
-    'avoid_stairs': ['Avoid stairs', 'تجنّب السلالم'],
-    'step_free_on': ['Step-free routes on', 'المسارات بدون سلالم مفعّلة'],
-    'recenter': ['Recenter', 'إعادة التوسيط'],
-    'clear_route': ['Clear route', 'إلغاء المسار'],
-    'language': ['Language', 'اللغة'],
-    'my_tour': ['My tour', 'جولتي'],
-    'tour': ['Tour', 'جولة'],
-    'tour_empty': ['Pin places on the map to build a tour.', 'ثبّت أماكن على الخريطة لتكوين جولة.'],
-    'optimize': ['Best order', 'أفضل ترتيب'],
-    'start_tour': ['Start tour', 'ابدأ الجولة'],
-    'stops': ['{n} stops', '{n} محطات'],
-    'skipped': ['No route to: {x}', 'لا يوجد مسار إلى: {x}'],
-    'from_here': ['Starting from {x}', 'نقطة البداية: {x}'],
-    'continue_on': ['Continue on {x}', 'تابع في {x}'],
-    'timeline': ['Timeline', 'الخط الزمني'],
-    'galleries_n': ['Galleries {x}', 'القاعات {x}'],
-    'floor': ['Floor', 'الدور'],
-    'close': ['Close', 'إغلاق'],
-    'region_route': ['Route here', 'المسار إلى هنا'],
-    // directions
-    'step_start': ['Start at {x}', 'ابدأ من {x}'],
-    'step_start_plain': ['Start', 'ابدأ'],
-    'step_left': ['Turn left', 'انعطف يسارًا'],
-    'step_left_at': ['Turn left near {x}', 'انعطف يسارًا عند {x}'],
-    'step_right': ['Turn right', 'انعطف يمينًا'],
-    'step_right_at': ['Turn right near {x}', 'انعطف يمينًا عند {x}'],
-    'step_enter': ['Enter the {x}', 'ادخل إلى {x}'],
-    'step_stairs': ['Take the stairs up to {x}', 'اصعد السلالم إلى {x}'],
-    'step_lift': ['Take the lift to {x}', 'استخدم المصعد إلى {x}'],
-    'step_arrive': ['Arrive at {x}', 'وصلت إلى {x}'],
-    'step_arrive_plain': ['You have arrived', 'لقد وصلت'],
-    'step_stop': ['Stop {n}: {x}', 'المحطة {n}: {x}'],
-    'where_are_you': ['Where are you?', 'أين أنت؟'],
-    'where_hint': ["There's no GPS indoors, so tell me where you're standing. Routes will start from there.", 'لا يوجد GPS داخل المتحف، أخبرني أين تقف وسيبدأ المسار من هناك.'],
-    'pick_on_map': ['Pick on the map', 'اختر على الخريطة'],
-    'pick_hint': ['Tap the map where you are', 'المس الخريطة حيث تقف'],
-    'at_entrance': ["I'm at an entrance", 'أنا عند مدخل'],
-    'search_place': ['Or search a place next to you', 'أو ابحث عن مكان بجانبك'],
-    'your_location': ['Your location', 'موقعك'],
-    'locate_me': ['Where am I?', 'أين أنا؟'],
-    'fit_map': ['Fit map', 'ملاءمة الخريطة'],
-    'rotate_map': ['Turn map 90°', 'تدوير الخريطة ٩٠°'],
-    'back_to': ['Back to {x}', 'العودة إلى {x}'],
-    'change': ['Change', 'تغيير'],
-    'cancel': ['Cancel', 'إلغاء'],
-    'tour_origin_unset': ['Tap to set where you are', 'المس لتحديد موقعك'],
-    'search_ph': ['Search places, galleries, shops…', 'ابحث عن أماكن وقاعات ومتاجر…'],
-    'popular': ['Popular', 'الأكثر طلبًا'],
-    'no_results_hint': ['Try a name, a number, or a type like “food” or “restroom”.', 'جرّب اسمًا أو رقمًا أو نوعًا مثل «مطعم» أو «دورات مياه».'],
-    'f_all': ['All', 'الكل'],
-    'f_halls': ['Halls', 'القاعات الكبرى'],
-    'no_n': ['No. {n}', 'رقم {n}'],
-    'step_free_off': ['Step-free routes off', 'تم إيقاف المسارات بدون سلالم'],
-    'step_exit': ['Leave the {x}', 'اخرج من {x}'],
-    'step_stairs_down': ['Take the stairs down to {x}', 'انزل السلالم إلى {x}'],
-    'step_lift_down': ['Take the lift down to {x}', 'استخدم المصعد للنزول إلى {x}'],
-    'to_x': ['To {x}', 'إلى {x}'],
-    'step_free_badge': ['Step-free', 'بدون سلالم'],
-    'in_map': ['In {x}', 'في {x}'],
-    'show_directions': ['Directions', 'الاتجاهات'],
-    'results_n': ['{n} results', '{n} نتيجة'],
-    // settings & map controls
-    'settings': ['Settings', 'الإعدادات'],
-    'appearance': ['Appearance', 'المظهر'],
-    'theme_system': ['Auto', 'تلقائي'],
-    'theme_light': ['Light', 'فاتح'],
-    'theme_dark': ['Dark', 'داكن'],
-    'zoom_in': ['Zoom in', 'تكبير'],
-    'zoom_out': ['Zoom out', 'تصغير'],
-    'step_free_hint': ['Avoid stairs when planning routes', 'تجنّب السلالم عند تخطيط المسار'],
-    'rotate_hint': ['Turn the plan to fill a tall screen', 'أدر المخطط ليملأ الشاشة الطويلة'],
-    'start': ['Start', 'ابدأ'],
-    'current_location': ['Current location', 'الموقع الحالي'],
-    'where_now': ['Where are you right now?', 'أين أنت الآن؟'],
-    'quick_spots': ['Quick picks', 'اختيارات سريعة'],
-    'or_search': ['Or search', 'أو ابحث'],
-    'nearby_hint': ['A shop, gallery, restroom… anything you can see', 'متجر، قاعة، دورات مياه… أي شيء تراه'],
-    'about_museum': ['The people behind the stone', 'الإنسان خلف الحجر'],
-    'about_hint': ['Behind every statue, a life. Read what the stone never said.', 'خلف كل تمثال حياة كاملة… اقرأ ما لم يقله الحجر.'],
-    'discover_story': ['Discover its story', 'اكتشف قصته'],
-    'floor_0': ['the ground floor', 'الدور الأرضي'],
-    'floor_1': ['the 1st floor', 'الدور الأول'],
-    'floor_2': ['the 2nd floor', 'الدور الثاني'],
-    'floor_3': ['the 3rd floor', 'الدور الثالث'],
-  };
+  /// Right-to-left (Arabic).
+  static bool get rtl => lang.rtl;
+
+  static String _pick(List<String>? row, AppLang l) {
+    if (row == null) return '';
+    final s = row[l.index];
+    return s.isEmpty ? row[0] : s;
+  }
+
+  /// Letter-spacing for small capitals: none for Arabic (it would break the
+  /// joined letters) or for Japanese, Korean and Chinese.
+  static double tracking(double v) => rtl || lang.cjk ? 0 : v;
 
   static String t(String key, {String? x, int? n}) {
-    final pair = _t[key];
-    var s = pair == null ? key : pair[ar ? 1 : 0];
+    final row = kUi[key];
+    var s = row == null ? key : _pick(row, lang);
     if (x != null) s = s.replaceAll('{x}', x);
     if (n != null) s = s.replaceAll('{n}', '$n');
     return s;
   }
 
   // ── names ──────────────────────────────────────────────────────
-  static String _name(String en) => nameIn(en, arabic: ar);
-
-  /// The name in a chosen language, whatever language the app is in now
-  /// (search needs both at once).
-  static String nameIn(String en, {required bool arabic}) {
-    if (!arabic) return en;
-    final hit = kArByName[en];
-    if (hit != null) return hit;
-    final g = RegExp(r'^Gallery (\d+)(.*)$').firstMatch(en);
-    if (g != null) return 'قاعة ${g.group(1)}${g.group(2)!.isEmpty ? '' : ' (القاعة الثانية)'}';
+  /// A place, hall or label name in [l] (search needs every language at once).
+  static String nameIn(String en, AppLang l) {
+    final row = kNames[en];
+    if (row != null) return _pick(row, l);
+    final g = RegExp(r'^Gallery (\d+)( \(second hall\))?$').firstMatch(en);
+    if (g != null) {
+      return _pick(kNamePatterns[g.group(2) == null ? 'gallery' : 'gallery_second'], l).replaceAll('{n}', g.group(1)!);
+    }
     final p = RegExp(r'^Parking (P\d)$').firstMatch(en);
-    if (p != null) return 'موقف ${p.group(1)}';
-    return en;
+    if (p != null) return _pick(kNamePatterns['parking'], l).replaceAll('{n}', p.group(1)!);
+    return en; // brand names (shops, cafés) read the same in every language
   }
 
-  static String place(MapPlace p) => _name(p.name);
-  static String region(MapRegion r) => _name(r.name);
+  static String name(String en) => nameIn(en, lang);
+  static String place(MapPlace p) => name(p.name);
+  static String region(MapRegion r) => name(r.name);
   static String placeId(String id) {
     final p = placeById(id);
     return p == null ? t('your_location') : place(p);
   }
 
-  /// Name of any routing node: a place by name, a bare junction as "Your location".
+  /// Name of any routing node: a place by name, anything else as "Your location".
   static String nodeName(String id) => placeId(id);
 
-  static String category(PlaceCategory c) => ar ? (kArCategory[c.label] ?? c.label) : c.label;
-  static String filter(PlaceCategory c) => ar ? (kArCategory[c.filterLabel] ?? c.filterLabel) : c.filterLabel;
+  static String regionId(String id) {
+    for (final r in kRegions) {
+      if (r.id == id) return region(r);
+    }
+    return '';
+  }
+
+  static String category(PlaceCategory c) => t('cat_${c.name}');
+  static String filter(PlaceCategory c) => t('cats_${c.name}');
+
+  /// Every language's words for a category (for search).
+  static String categoryAll(PlaceCategory c) => [
+    for (final l in AppLang.values) ...[_pick(kUi['cat_${c.name}'], l), _pick(kUi['cats_${c.name}'], l)],
+  ].join(' ');
 
   static String chip(String c) {
-    if (!ar) return c;
-    final hit = kArChip[c];
-    if (hit != null) return hit;
-    return c.replaceAll(' BC', ' ق.م').replaceAll(' AD', ' م');
+    if (kNames.containsKey(c)) return name(c);
+    final f = RegExp(r'^(\d)(?:st|nd|rd|th) Floor$').firstMatch(c);
+    if (f != null) return floorLabel(int.parse(f.group(1)!));
+    return dates(c);
   }
 
-  static String mapTitle(GemMap m) {
-    if (!ar) return m.title;
-    return switch (m.id) {
-      'gem_complex' => 'مجمع المتحف',
-      'main_building' => 'المبنى الرئيسي',
-      'main_galleries' => 'قاعات العرض الرئيسية',
-      'tutankhamun' => 'قاعات توت عنخ آمون',
-      _ => m.title,
-    };
-  }
-
-  static String mapShort(GemMap m) {
-    if (!ar) return m.shortTitle;
-    return switch (m.id) {
-      'gem_complex' => 'المجمع',
-      'main_building' => 'المبنى',
-      'main_galleries' => 'القاعات',
-      'tutankhamun' => 'توت عنخ آمون',
-      _ => m.shortTitle,
-    };
-  }
-
-  static String levelTag(GemMap m) => ar ? m.levelTagAr : m.levelTag;
-  static String era(Era e) => ar ? e.nameAr : e.name;
-  static String label(MapLabel l) => ar ? l.textAr : l.text;
-
-  static String description(MapPlace p) {
-    if (!ar) return p.description ?? '';
-    final d = p.description;
-    final g = RegExp(r'^gallery (\d+)', caseSensitive: false).firstMatch(p.name);
-    if (g != null) {
-      final n = int.parse(g.group(1)!);
-      for (final e in kEras) {
-        final lo = int.parse(e.galleries.substring(0, 2)), hi = int.parse(e.galleries.substring(3));
-        if (n >= lo && n <= hi) return '${e.nameAr} — ${e.range.replaceAll(' BC', ' ق.م').replaceAll(' AD', ' م')}';
+  /// "1550–1069 BC" in the current language's era notation.
+  static String dates(String s) {
+    final bc = t('bc'), ad = t('ad');
+    if (lang.cjk) {
+      // 紀元前1550–1069年 · 公元前1550—前1069年 · 기원전 1550–1069년
+      final m = RegExp(r'^([\d,]+)\s*(BC)?\s*–\s*([\d,]+)\s*(BC|AD)$').firstMatch(s);
+      if (m != null) {
+        final a = m.group(1)!, b = m.group(3)!;
+        final aEra = m.group(2) != null || m.group(4) == 'BC' ? bc : ad;
+        final bEra = m.group(4) == 'BC' ? bc : ad;
+        final sp = lang == AppLang.ko ? ' ' : '';
+        final yr = lang == AppLang.ko ? '년' : '年';
+        return aEra == bEra ? '$aEra$sp$a–$b$yr' : '$aEra$sp$a$yr–$bEra$sp$b$yr';
       }
     }
-    return d ?? '';
+    return s.replaceAll(' BC', ' $bc').replaceAll(' AD', ' $ad');
+  }
+
+  static String mapTitle(GemMap m) => kUi.containsKey('map_${m.id}') ? t('map_${m.id}') : m.title;
+  static String mapShort(GemMap m) => kUi.containsKey('mapshort_${m.id}') ? t('mapshort_${m.id}') : m.shortTitle;
+
+  /// The level badge of a map ("Level 3" → the local name of that floor).
+  static String levelTag(GemMap m) => m.id == 'gem_complex' ? t('site') : floorLabel(m.level);
+  static String era(Era e) => t('era_${e.id}');
+  static String label(MapLabel l) => name(l.text);
+
+  static String description(MapPlace p) {
+    final row = kDescriptions[p.id] ??
+        (p.id.startsWith('tg_') && p.category == PlaceCategory.attraction ? kDescriptions['tg_highlight'] : null) ??
+        _eraDescription(p);
+    if (row != null) return _pick(row, lang);
+    return lang == AppLang.en ? (p.description ?? '') : '';
+  }
+
+  static List<String>? _eraDescription(MapPlace p) {
+    final g = RegExp(r'^Gallery (\d+)').firstMatch(p.name);
+    if (g == null) return null;
+    final n = int.parse(g.group(1)!);
+    for (final e in kEras) {
+      final lo = int.parse(e.galleries.substring(0, 2)), hi = int.parse(e.galleries.substring(3));
+      if (n >= lo && n <= hi) return kDescriptions[e.id];
+    }
+    return null;
   }
 
   // ── numbers ────────────────────────────────────────────────────
   static String distance(double meters) {
     final m = (meters / 5).round() * 5; // never pretend to be more exact than the estimate
-    return ar ? '${m < 5 ? 5 : m} م' : '${m < 5 ? 5 : m} m';
+    return t('unit_m', n: m < 5 ? 5 : m);
   }
 
-  static String minutes(Duration d) {
-    final m = (d.inSeconds / 60).ceil().clamp(1, 999);
-    return ar ? '$m د' : '$m min';
-  }
+  static String minutes(Duration d) => t('unit_min', n: (d.inSeconds / 60).ceil().clamp(1, 999));
 
+  static String list(Iterable<String> items) => items.join(t('list_sep'));
+
+  /// A floor's local name, for use inside a sentence ("ground floor", "2階").
   static String floorName(int f) => t('floor_${f.clamp(0, 3)}');
+
+  /// A floor's local name on its own (a chip, a badge): capitalised.
+  static String floorLabel(int f) {
+    final s = floorName(f);
+    return s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+  }
 
   // ── directions ─────────────────────────────────────────────────
   static String step(RouteStep s) {
-    String? near = s.targetId == null ? null : placeId(s.targetId!);
+    final near = s.targetId == null ? null : placeId(s.targetId!);
     switch (s.kind) {
       case StepKind.start:
         return near == null ? t('step_start_plain') : t('step_start', x: near);
@@ -229,10 +164,23 @@ class S {
       case StepKind.exitBuilding:
         final m = s.refMapId == null ? null : allMaps[s.refMapId!];
         return t('step_exit', x: m == null ? '' : mapTitle(m));
+      case StepKind.enterRoom:
+        return t('step_room', x: s.targetId != null ? placeId(s.targetId!) : regionId(s.regionId ?? ''));
+      case StepKind.door:
+        return t('step_door');
+      case StepKind.passage:
+        return t('step_passage');
+      case StepKind.steps:
+        final into = s.targetId != null ? placeId(s.targetId!) : (s.regionId != null ? regionId(s.regionId!) : null);
+        return into == null ? t('step_steps') : t('step_steps_into', x: into);
+      case StepKind.levelReached:
+        return t('step_now_on', x: floorName(s.floor));
       case StepKind.stairs:
         return t(s.down ? 'step_stairs_down' : 'step_stairs', x: floorName(s.floor));
       case StepKind.lift:
         return t(s.down ? 'step_lift_down' : 'step_lift', x: floorName(s.floor));
+      case StepKind.travelator:
+        return t(s.down ? 'step_travelator_down' : 'step_travelator', x: floorName(s.floor));
       case StepKind.arrive:
         return near == null ? t('step_arrive_plain') : t('step_arrive', x: near);
       case StepKind.stop:

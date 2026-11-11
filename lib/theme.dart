@@ -13,7 +13,6 @@ abstract final class Stone {
 /// Brand colours used by the data files (eras, pins). They stay `const`;
 /// anything that changes between light and dark comes from [GemPalette].
 abstract final class GemColors {
-  static const ivory = Stone.sand;
   static const map = Stone.sand;
   static const teal = Stone.sage; // era 1, shops, gardens
   static const ink = Stone.midnight;

@@ -47,9 +47,6 @@ class IsoCamera {
   /// `K · M`.
   Matrix4 compose(Matrix4 flat) => matrix * flat;
 
-  /// A flat-screen point (what the gestures work in) -> real screen point.
-  Offset toScreen(Offset flat) => project(matrix, flat.dx, flat.dy);
-
   /// Real screen point -> flat-screen point.
   Offset toFlat(Offset screen) => unproject(matrix, screen) ?? screen;
 }

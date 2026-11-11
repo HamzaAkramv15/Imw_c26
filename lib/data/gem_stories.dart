@@ -1,5 +1,9 @@
+import '../i18n/lang.dart';
+import 'gem_stories_i18n.dart';
+
 /// Stories for the places people actually come to see: a catchy line, the story
-/// behind it, and a closing thought, in English and Arabic.
+/// behind it, and a closing thought. Written in English and Arabic here; the
+/// other six languages are in gem_stories_i18n.dart.
 ///
 /// Keys are place ids (`mb_1`), or region ids (`mb_zone_stairs`, `tg_discovery`).
 /// The Ramses Square account is the local tale as it is told in Cairo.
@@ -13,7 +17,11 @@ class PlaceStory {
     this.teaserAr = '',
     this.closing = '',
     this.closingAr = '',
+    this.id = '',
   });
+
+  /// The story's key (set by [storyFor]), to find its translations.
+  final String id;
   final String hook;
   final String hookAr;
   final String story;
@@ -25,18 +33,49 @@ class PlaceStory {
   final String teaserAr;
   final String closing;
   final String closingAr;
+
+  List<String>? _tr(AppLang l) => kStoryI18n[l.code]?[kStoryAliases[id] ?? id];
+
+  /// Whether the story is written in [l] (otherwise the English text is shown,
+  /// and the sheet says so).
+  bool availableIn(AppLang l) => l == AppLang.en || l == AppLang.ar || _tr(l) != null;
+
+  String _in(AppLang l, int i, String en, String ar) {
+    if (l == AppLang.ar) return ar;
+    if (l == AppLang.en) return en;
+    return _tr(l)?[i] ?? en;
+  }
+
+  String hookIn(AppLang l) => _in(l, 0, hook, hookAr);
+  String teaserIn(AppLang l) => _in(l, 1, teaser, teaserAr);
+  String storyIn(AppLang l) => _in(l, 2, story, storyAr);
+  String closingIn(AppLang l) => _in(l, 3, closing, closingAr);
+
+  /// Every language's text, for search.
+  String get allText => [
+        hook, hookAr, story, storyAr,
+        for (final t in kStoryI18n.values) ...?t[kStoryAliases[id] ?? id]?.take(3),
+      ].join(' ');
 }
 
 /// Story for a place or region id. Gallery regions (`mg_zone_03`) share the
 /// story of their place (`mg_03`).
-PlaceStory? storyFor(String id) => kStories[id] ?? kStories[id.replaceFirst('mg_zone_', 'mg_')];
-
-const String kEpilogueTitle = 'Egypt was never just a past';
-const String kEpilogueTitleAr = 'لم تكن مصر يومًا مجرد ماضٍ';
-const String kEpilogue = "After this journey, perhaps you will look at the Grand Egyptian Museum a little differently. You will see that Ramesses was not merely a giant statue of granite, that Merenptah was not simply a name carved into a column, and that the king and queen who returned from beneath the sea were not just two enormous statues.\n\nEvery object came from somewhere, from a particular time, and from the life of a person or a community. There were people who created, loved, ruled, believed, built, fought, wrote and eventually died. There were people who left things behind without knowing those objects would one day become the memory of a nation.\n\nEgypt is not only the pyramids, kings and gold. Egypt is the human being who lived here, the work they left behind, the dreams they tried to fulfil, and the memory that time refused to erase.";
-const String kEpilogueAr = "بعد هذه الرحلة، ربما تنظر إلى المتحف المصري الكبير بطريقة مختلفة. سترى أن رمسيس لم يكن مجرد ملك ضخم من الجرانيت، وأن مرنبتاح لم يكن مجرد اسم محفور على عمود، وأن الملك والملكة اللذين عادا من أعماق البحر لم يكونا مجرد تمثالين.\n\nكل قطعة هنا جاءت من مكان ما، ومن زمن ما، ومن حياة إنسان أو مجموعة من البشر. هناك من صنع، ومن أحب، ومن حكم، ومن آمن، ومن بنى، ومن حارب، ومن كتب، ومن مات. وهناك أناس تركوا وراءهم أشياء لم يعرفوا أنها ستصبح يومًا ذاكرة وطن.\n\nمصر ليست فقط الأهرامات والملوك والذهب. مصر هي الإنسان الذي عاش هنا، والعمل الذي تركه، والحلم الذي حاول تحقيقه، والذاكرة التي رفض الزمن أن يمحوها.";
-const String kEpilogueClosing = "Civilisations may fall, cities may disappear and kings may leave, but what human beings create with love and dedication can continue telling their stories for thousands of years.";
-const String kEpilogueClosingAr = "قد تموت الحضارات، وقد تختفي المدن، وقد يرحل الملوك، لكن ما يصنعه الإنسان بحب وإتقان قد يظل يحكي عنه لآلاف السنين.";
+PlaceStory? storyFor(String id) {
+  final key = kStories.containsKey(id) ? id : id.replaceFirst('mg_zone_', 'mg_');
+  final s = kStories[key];
+  if (s == null) return null;
+  return PlaceStory(
+    id: key,
+    hook: s.hook,
+    hookAr: s.hookAr,
+    story: s.story,
+    storyAr: s.storyAr,
+    teaser: s.teaser,
+    teaserAr: s.teaserAr,
+    closing: s.closing,
+    closingAr: s.closingAr,
+  );
+}
 
 const Map<String, PlaceStory> kStories = {
   "mb_1": PlaceStory(

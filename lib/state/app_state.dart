@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../i18n/lang.dart';
 import 'store.dart';
 
 /// App-wide settings. Listen to it (it is a [ChangeNotifier]) to rebuild
@@ -7,9 +8,13 @@ import 'store.dart';
 /// Every change is saved, and restored on the next launch.
 class AppState extends ChangeNotifier {
   AppState._() {
-    _arabic = Store['arabic'] == true;
-    _avoidStairs = Store['avoidStairs'] == true;
-    _themeMode = switch (Store['theme']) {
+    final saved = Store.get('lang');
+    _lang = saved is String
+        ? AppLang.fromCode(saved)
+        // older versions saved a bool; otherwise follow the device language
+        : (Store.get('arabic') == true ? AppLang.ar : _deviceLang());
+    _avoidStairs = Store.get('avoidStairs') == true;
+    _themeMode = switch (Store.get('theme')) {
       'light' => ThemeMode.light,
       'dark' => ThemeMode.dark,
       _ => ThemeMode.system,
@@ -17,19 +22,25 @@ class AppState extends ChangeNotifier {
   }
   static final AppState instance = AppState._();
 
-  bool _arabic = false;
+  late AppLang _lang;
   bool _avoidStairs = false;
   ThemeMode _themeMode = ThemeMode.system;
 
-  bool get isArabic => _arabic;
+  AppLang get lang => _lang;
+
+  /// Step-free routing: lifts and level floor only (no stairs, no treads, no
+  /// moving walkway).
   bool get avoidStairs => _avoidStairs;
   ThemeMode get themeMode => _themeMode;
 
-  void toggleLanguage() => setArabic(!_arabic);
+  static AppLang _deviceLang() {
+    final code = WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+    return AppLang.fromCode(code);
+  }
 
-  void setArabic(bool v) {
-    if (_arabic == v) return;
-    _arabic = v;
+  void setLang(AppLang l) {
+    if (_lang == l) return;
+    _lang = l;
     _save();
     notifyListeners();
   }
@@ -49,14 +60,8 @@ class AppState extends ChangeNotifier {
   }
 
   void _save() => Store.put({
-    'arabic': _arabic,
+    'lang': _lang.code,
     'avoidStairs': _avoidStairs,
     'theme': _themeMode.name,
   });
-}
-
-extension on Type {
-  Object? operator [](String other) {
-    return null;
-  }
 }

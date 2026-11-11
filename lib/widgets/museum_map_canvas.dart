@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -11,9 +12,10 @@ import 'package:flutter_svg/flutter_svg.dart';
 
 import '../data/gem_blocks.dart';
 import '../data/gem_extras.dart';
+import '../data/gem_figures.dart';
+import '../data/gem_nav.dart';
 import '../data/gem_floors.dart';
 import '../data/gem_map_data.dart';
-import '../data/gem_paths.dart';
 import '../i18n/strings.dart';
 import '../models/map_models.dart';
 import '../services/route_finder.dart';
@@ -101,6 +103,7 @@ class _Prism {
     required this.sign,
     required this.path,
     required this.centroid,
+    this.gaps = const [],
   });
   final MapRegion region;
   final List<Offset> pts;
@@ -114,6 +117,33 @@ class _Prism {
   final int sign;
   final Path path;
   final Offset centroid;
+
+  /// Per edge, the stretches (t0, t1 along the edge) left open (kWallGaps).
+  final List<List<(double, double)>> gaps;
+}
+
+/// kWallGaps for one region as gaps per edge (see gem_nav.dart).
+List<List<(double, double)>> _gapsOf(String id, int edges) {
+  final out = List.generate(edges, (_) => <(double, double)>[]);
+  final v = kWallGaps[id] ?? const <double>[];
+  for (var i = 0; i + 2 < v.length; i += 3) {
+    final e = v[i].toInt();
+    if (e < edges) out[e].add((v[i + 1], v[i + 2]));
+  }
+  return out;
+}
+
+/// The solid stretches of an edge between its gaps.
+List<(double, double)> _solidRuns(List<(double, double)> gaps) {
+  if (gaps.isEmpty) return const [(0.0, 1.0)];
+  final out = <(double, double)>[];
+  var t = 0.0;
+  for (final (g0, g1) in gaps) {
+    if (g0 > t) out.add((t, g0));
+    if (g1 > t) t = g1;
+  }
+  if (t < 1) out.add((t, 1.0));
+  return out;
 }
 
 /// A shop unit, fixture, exhibit case, statue, thin wall or stair tread:
@@ -157,17 +187,7 @@ class _Slab {
     return Offset(x / norm.length, y / norm.length);
   }
 
-  bool contains(Offset p) {
-    var inside = false;
-    for (var i = 0, j = norm.length - 1; i < norm.length; j = i++) {
-      final a = norm[i], b = norm[j];
-      if ((a.dy > p.dy) != (b.dy > p.dy) &&
-          p.dx < (b.dx - a.dx) * (p.dy - a.dy) / (b.dy - a.dy) + a.dx) {
-        inside = !inside;
-      }
-    }
-    return inside;
-  }
+  bool contains(Offset p) => pointInPolygon(p, norm);
 }
 
 List<Offset> _hullOf(List<Offset> pts) {
@@ -567,21 +587,127 @@ int _slabFront(_Slab a, _Slab b, double vx, double vy) {
   return 0;
 }
 
-/// A statue that stands upright on its plinth (data: kFigures in gem_blocks.dart).
-/// Its outline is a front elevation, so it is turned to face the viewer.
+/// A thin wall quad with the openings in it cut out: the wall is split along its
+/// long axis wherever an opening's circle crosses that axis (the routes go
+/// through there; tools/test_nav.py checks the same geometry).
+List<List<Offset>> _cutDoorways(List<Offset> quad, List<(Offset, Offset)> doors) {
+  if (quad.length != 4) return [quad];
+  // long axis: from the middle of one short side to the middle of the other
+  final e0 = (quad[1] - quad[0]).distance, e1 = (quad[2] - quad[1]).distance;
+  final s0 = e0 < e1 ? 0 : 1; // first short side starts at quad[s0]
+  final a = (quad[s0] + quad[s0 + 1]) / 2, b = (quad[(s0 + 2) % 4] + quad[(s0 + 3) % 4]) / 2;
+  final len = (b - a).distance;
+  if (len < 1e-6) return [quad];
+  final dir = (b - a) / len;
+  final half = (e0 < e1 ? e0 : e1) / 2;
+  final normal = Offset(-dir.dy, dir.dx);
+  final cuts = <(double, double)>[];
+  for (final (p, q) in doors) {
+    final c = (p + q) / 2;
+    final t = (c - a).dx * dir.dx + (c - a).dy * dir.dy;
+    final off = ((c - a).dx * normal.dx + (c - a).dy * normal.dy).abs();
+    // the opening is the circle around the door's centre (radius half its
+    // width): it opens the stretch of the wall's axis inside that circle, as
+    // the routing grid does
+    final r = (q - p).distance / 2;
+    if (off >= r) continue;
+    final w = math.sqrt(r * r - off * off);
+    if (t > -w && t < len + w) cuts.add((t - w, t + w));
+  }
+  if (cuts.isEmpty) return [quad];
+  cuts.sort((x, y) => x.$1.compareTo(y.$1));
+  final out = <List<Offset>>[];
+  var from = 0.0;
+  List<Offset> piece(double t0, double t1) => [
+    a + dir * t0 + normal * half,
+    a + dir * t1 + normal * half,
+    a + dir * t1 - normal * half,
+    a + dir * t0 - normal * half,
+  ];
+  for (final (c0, c1) in cuts) {
+    if (c0 - from > 0.5) out.add(piece(from, math.min(c0, len)));
+    from = c1 > from ? c1 : from;
+  }
+  if (len - from > 0.5) out.add(piece(from, len));
+  return out;
+}
+
+/// Stall lines of a car park: across its longest side, every [gap] map units,
+/// clipped to the outline and kept off its edges.
+List<(Offset, Offset)> _stallLines(List<Offset> poly, {double gap = 7, double inset = 3}) {
+  if (poly.length < 3) return const [];
+  var a = poly[0], b = poly[1];
+  for (var i = 0; i < poly.length; i++) {
+    final p = poly[i], q = poly[(i + 1) % poly.length];
+    if ((q - p).distance > (b - a).distance) {
+      a = p;
+      b = q;
+    }
+  }
+  final len = (b - a).distance;
+  if (len < 1) return const [];
+  final dir = (b - a) / len, nrm = Offset(-dir.dy, dir.dx);
+  double along(Offset p) => (p - a).dx * dir.dx + (p - a).dy * dir.dy;
+  var lo = double.infinity, hi = -double.infinity;
+  for (final p in poly) {
+    lo = math.min(lo, along(p));
+    hi = math.max(hi, along(p));
+  }
+  final out = <(Offset, Offset)>[];
+  for (var t = lo + inset + gap / 2; t < hi - inset; t += gap) {
+    // crossings of the line {along = t} with the outline
+    final hits = <double>[];
+    for (var i = 0; i < poly.length; i++) {
+      final p = poly[i], q = poly[(i + 1) % poly.length];
+      final tp = along(p), tq = along(q);
+      if ((tp - t) * (tq - t) < 0) {
+        final k = (t - tp) / (tq - tp);
+        final c = p + (q - p) * k;
+        hits.add((c - a).dx * nrm.dx + (c - a).dy * nrm.dy);
+      }
+    }
+    hits.sort();
+    for (var i = 0; i + 1 < hits.length; i += 2) {
+      if (hits[i + 1] - hits[i] < inset * 3) continue;
+      final base = a + dir * t;
+      out.add((base + nrm * (hits[i] + inset), base + nrm * (hits[i + 1] - inset)));
+    }
+  }
+  return out;
+}
+
+/// A monument standing on the plan (data: kFigures / kMeshes in gem_figures.dart):
+/// a triangle mesh fixed in the world, facing its real direction. Light comes
+/// from a fixed direction in the world, so each triangle's shade is computed
+/// once; every frame only culls, sorts and projects.
 class _Figure {
   _Figure({
     required this.id,
     required this.norm,
     required this.anchor,
     required this.height,
-    required this.uv,
+    required this.xyz,
+    required this.tris,
+    required this.normals,
+    required this.lit,
+    required this.litDark,
+    this.outline,
+    this.color = 0,
   });
   final String id;
   final Offset norm; // anchor, 0..1 (to find the room it stands in)
   final Offset anchor; // map px
   final double height; // map px
-  final List<Offset> uv; // u across, v up, in units of [height]
+  final Float64List xyz; // vertices in map px (x, y, z up)
+  final List<int> tris; // three vertex indices per triangle
+  final Float64List normals; // outward normal per triangle (unit)
+  final Int32List lit; // shaded colour per triangle, day palette
+  final Int32List litDark; // night palette
+
+  /// An upright outline instead of a mesh (kSilhouettes): u across, v up, in
+  /// units of [height]; drawn turned to face the viewer, in [color].
+  final List<Offset>? outline;
+  final int color;
 }
 
 /// Which walls of a room prism to paint: [back] the far (inner) faces,
@@ -611,19 +737,12 @@ const Map<String, double> _heightOverride = {
   'mb_zone_stairs': 0.034,
   'cx_events': 0,
   'cx_pyramids_steps': 0.012,
-  'cx_obelisk': 0.02,
+  'cx_obelisk': 0, // an open plaza: no walls (also left open in the routing grid)
 };
 
-bool _pointInPoly(Offset p, List<Offset> poly) {
-  var inside = false;
-  for (var i = 0, j = poly.length - 1; i < poly.length; j = i++) {
-    final a = poly[i], b = poly[j];
-    if ((a.dy > p.dy) != (b.dy > p.dy) &&
-        p.dx < (b.dx - a.dx) * (p.dy - a.dy) / (b.dy - a.dy) + a.dx) {
-      inside = !inside;
-    }
-  }
-  return inside;
+extension on Color {
+  /// The colour darkened (k < 1) or lightened (k > 1), clamped.
+  Color withShade(double k) => _shade(this, k);
 }
 
 Color _shade(Color c, double k) => Color.from(
@@ -795,6 +914,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   /// Garden and parking regions: flat ground that has no walls and is not in
   /// _floorPath, so it gets its own fill (GemPalette.garden / .parking).
   List<(Path, RegionKind)> _ground = const [];
+
+  /// Parking bays: the stall lines painted across each car park (map px).
+  List<(Offset, Offset)> _bays = const [];
   final Map<String, Path> _paths = {};
   final Map<String, _Prism> _prismById = {};
   Path _floorPath = Path();
@@ -920,6 +1042,11 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final ground = <(Path, RegionKind)>[];
     _paths.clear();
     _prismById.clear();
+    final doors = [
+      for (final d in kDoors)
+        if (d.mapId == widget.map.id)
+          (Offset(d.a.dx * px.width, d.a.dy * px.height), Offset(d.b.dx * px.width, d.b.dy * px.height)),
+    ];
     for (final r in widget.regions) {
       final pts = [
         for (final o in r.points) Offset(o.dx * px.width, o.dy * px.height),
@@ -947,11 +1074,15 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         cx += a.dx;
         cy += a.dy;
       }
+      final solid = r.kind == RegionKind.building || r.kind == RegionKind.attraction;
       final pr = _Prism(
         region: r,
         pts: pts,
         height: f * u,
-        solid: r.kind == RegionKind.building || r.kind == RegionKind.attraction,
+        solid: solid,
+        // openings, and where Tutankhamun zones meet other floor: the routing
+        // grid leaves exactly these open. A solid block is drawn closed.
+        gaps: solid ? const [] : _gapsOf(r.id, pts.length),
         sign: s >= 0 ? 1 : -1,
         path: path,
         centroid: Offset(cx / pts.length, cy / pts.length),
@@ -961,6 +1092,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     }
     _prisms = prisms;
     _ground = ground;
+    _bays = [
+      for (final r in widget.regions)
+        if (r.kind == RegionKind.parking) ..._stallLines([for (final o in r.points) Offset(o.dx * px.width, o.dy * px.height)]),
+    ];
     final raw = <_SlabPiece>[];
     void addSlab(String kind, double h, List<double> v) {
       if (v.length < 6) return;
@@ -968,8 +1103,11 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         for (var i = 0; i + 1 < v.length; i += 2)
           Offset(v[i] * px.width, v[i + 1] * px.height),
       ];
-      for (final pc in _convexPieces(poly)) {
-        raw.add(_SlabPiece(kind, h * u, pc.pts, pc.outer, pc.convex));
+      final parts = (kind == 'wall' || kind == 'rwall') && doors.isNotEmpty ? _cutDoorways(poly, doors) : [poly];
+      for (final part in parts) {
+        for (final pc in _convexPieces(part)) {
+          raw.add(_SlabPiece(kind, h * u, pc.pts, pc.outer, pc.convex));
+        }
       }
     }
 
@@ -1018,17 +1156,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     _extraFloors = extra;
     _slabs = slabs;
     _figures = [
-      for (final f in kFigures[widget.map.id] ?? const <MapFigure>[])
-        _Figure(
-          id: f.id,
-          norm: Offset(f.x, f.y),
-          anchor: Offset(f.x * px.width, f.y * px.height),
-          height: f.height * u,
-          uv: [
-            for (var i = 0; i + 1 < f.uv.length; i += 2)
-              Offset(f.uv[i], f.uv[i + 1]),
-          ],
-        ),
+      for (final f in kFigures[widget.map.id] ?? const <MapFigure>[]) _placeFigure(f, px, u),
     ];
     _solids = [
       for (final p in prisms)
@@ -1044,6 +1172,78 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
           ),
         ) *
         1.8;
+  }
+
+  /// A monument's mesh in map space: its frame (u across, w forward, v up, in
+  /// units of its height) turned to face `facing` at its anchor, with every
+  /// triangle's normal and shaded colour worked out once.
+  _Figure _placeFigure(MapFigure f, Size px, double u) {
+    final h = f.height * u;
+    final ax = f.x * px.width, ay = f.y * px.height;
+    final sil = kSilhouettes[f.mesh];
+    if (sil != null) {
+      return _Figure(
+        id: f.id,
+        norm: Offset(f.x, f.y),
+        anchor: Offset(ax, ay),
+        height: h,
+        xyz: Float64List(0),
+        tris: const [],
+        normals: Float64List(0),
+        lit: Int32List(0),
+        litDark: Int32List(0),
+        outline: [for (var i = 0; i + 1 < sil.uv.length; i += 2) Offset(sil.uv[i], sil.uv[i + 1])],
+        color: sil.color,
+      );
+    }
+    final mesh = kMeshes[f.mesh]!;
+    final fx = math.cos(f.facing), fy = math.sin(f.facing); // forward, plan coordinates
+    final lx = fy, ly = -fx; // the statue's left
+    final n = mesh.verts.length ~/ 3;
+    final xyz = Float64List(n * 3);
+    for (var i = 0; i < n; i++) {
+      final pu = mesh.verts[i * 3], pw = mesh.verts[i * 3 + 1], pv = mesh.verts[i * 3 + 2];
+      xyz[i * 3] = ax + (lx * pu + fx * pw) * h;
+      xyz[i * 3 + 1] = ay + (ly * pu + fy * pw) * h;
+      xyz[i * 3 + 2] = pv * h;
+    }
+    final t = mesh.tris.length ~/ 3;
+    final normals = Float64List(t * 3);
+    final lit = Int32List(t), litDark = Int32List(t);
+    const lx0 = -0.45, ly0 = -0.55, lz0 = 0.7;
+    final ll = math.sqrt(lx0 * lx0 + ly0 * ly0 + lz0 * lz0);
+    for (var k = 0; k < t; k++) {
+      final a = mesh.tris[k * 3] * 3, b = mesh.tris[k * 3 + 1] * 3, c = mesh.tris[k * 3 + 2] * 3;
+      final ux = xyz[b] - xyz[a], uy = xyz[b + 1] - xyz[a + 1], uz = xyz[b + 2] - xyz[a + 2];
+      final vx = xyz[c] - xyz[a], vy = xyz[c + 1] - xyz[a + 1], vz = xyz[c + 2] - xyz[a + 2];
+      var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      final nl = math.sqrt(nx * nx + ny * ny + nz * nz);
+      if (nl > 0) {
+        nx /= nl;
+        ny /= nl;
+        nz /= nl;
+      }
+      normals[k * 3] = nx;
+      normals[k * 3 + 1] = ny;
+      normals[k * 3 + 2] = nz;
+      final lam = math.max(0.0, (nx * lx0 + ny * ly0 + nz * lz0) / ll);
+      // sky light from above keeps shadowed stone readable
+      final sky = 0.12 * math.max(0.0, nz);
+      final base = Color(mesh.colors[k]).withValues(alpha: 1);
+      lit[k] = base.withShade(0.56 + 0.5 * lam + sky).toARGB32();
+      litDark[k] = base.withShade(0.46 + 0.46 * lam + sky).toARGB32();
+    }
+    return _Figure(
+      id: f.id,
+      norm: Offset(f.x, f.y),
+      anchor: Offset(ax, ay),
+      height: h,
+      xyz: xyz,
+      tris: mesh.tris,
+      normals: normals,
+      lit: lit,
+      litDark: litDark,
+    );
   }
 
   /// The slabs far-to-near for the current yaw (cached: pan and zoom never
@@ -1130,9 +1330,11 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     return widget.highlighted.contains(id) ? 0.6 : 0;
   }
 
+  /// Regions lifted out of the veil and outlined. A gallery is not: its traced
+  /// outline is only approximate, so the pin alone marks it.
   Set<String> get _focusIds => {
-    ...widget.highlighted,
-    if (widget.selectedRegionId != null) widget.selectedRegionId!,
+    for (final id in [...widget.highlighted, if (widget.selectedRegionId != null) widget.selectedRegionId!])
+      if (widget.regions.where((r) => r.id == id).firstOrNull?.kind != RegionKind.gallery) id,
   };
 
   /// Height of the ground at a normalised point (only solid blocks have a roof).
@@ -1205,29 +1407,12 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     _image = null;
     _svg = null;
     _capturing = false;
-    // Pre-rendered artwork (assets/maps/png/<id>.png) is exact and instant; the
-    // off-screen SVG capture below stays as a fallback when it is missing.
+    final String raw;
     try {
-      final data = await rootBundle.load('assets/maps/png/$id.png');
-      final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
-      final frame = await codec.getNextFrame();
-      if (_disposed || !mounted || _loadedId != id) {
-        frame.image.dispose();
-        return;
-      }
-      setState(() {
-        _image?.dispose();
-        _image = frame.image;
-      });
-      return;
-    } catch (_) {}
-    String raw;
-    try {
-      raw = await rootBundle.loadString(
-        widget.map.asset.replaceFirst('assets/maps/', 'assets/maps/dark/'),
-      );
-    } catch (_) {
       raw = await rootBundle.loadString(widget.map.asset);
+    } catch (e) {
+      debugPrint('map artwork missing: ${widget.map.asset} ($e)');
+      return; // the map still draws its rooms, walls and pins without it
     }
     if (_disposed || !mounted || _loadedId != id) return;
     setState(() => _svg = _recolor(raw));
@@ -1395,8 +1580,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   }
 
   ({TextPainter fill, TextPainter halo}) _text(_LabelItem it, GemPalette p) {
-    final key = '${it.kind.index}|${it.text}|${it.size}|${p.dark}';
+    final key = '${it.kind.index}|${it.text}|${it.size}|${p.dark}|${S.lang.code}';
     return _texts.putIfAbsent(key, () {
+      // capitals and tracking only suit alphabets with letter case
+      final spaced = !S.rtl && !S.lang.cjk;
       final onFloor = it.kind == _LabelKind.region;
       final ink = onFloor ? Stone.midnight : Stone.sand;
       final halo = onFloor
@@ -1408,17 +1595,18 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
             : 'Arial',
         fontSize: it.size,
         fontWeight: it.weight,
-        letterSpacing: it.kind == _LabelKind.theme ? (S.ar ? 0 : 1.6) : 0.2,
+        letterSpacing: it.kind == _LabelKind.theme ? (spaced ? 1.6 : 0) : (S.lang.cjk ? 0 : 0.2),
         height: 1,
+        locale: S.lang.locale,
       );
       TextPainter mk(TextStyle st) => TextPainter(
         text: TextSpan(
-          text: it.kind == _LabelKind.theme && !S.ar
+          text: it.kind == _LabelKind.theme && spaced
               ? it.text.toUpperCase()
               : it.text,
           style: st,
         ),
-        textDirection: S.ar ? TextDirection.rtl : TextDirection.ltr,
+        textDirection: S.rtl ? TextDirection.rtl : TextDirection.ltr,
         textAlign: TextAlign.center,
       )..layout(maxWidth: 220);
       return (
@@ -1609,7 +1797,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     for (final p in solids) {
       final h = p.height * (1 + 0.7 * _liftOf(p.region.id));
       final roof = [for (final o in p.pts) project(full, o.dx, o.dy, h)];
-      if (_pointInPoly(screen, roof)) {
+      if (pointInPolygon(screen, roof)) {
         widget.onRegionTap(p.region);
         return;
       }
@@ -1672,22 +1860,21 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
                       child: CustomPaint(painter: _GroundPainter(p)),
                     ),
                   ),
-                  // 2 — floor, walls, route, names: one painter, repainted by the animations
-                  Positioned.fill(
-                    child: CustomPaint(
-                      painter: _IsoPainter(
-                        s: this,
-                        pal: p,
-                        repaint: Listenable.merge([
-                          widget.transform,
-                          _tilt,
-                          _loop,
-                          _liftCtl,
-                          widget.routeProgress,
-                        ]),
+                  // 2 — the model (floor, walls, blocks, monuments), the route, the
+                  // names: three layers, so the route's moving dashes (_loop, 60 fps
+                  // while a route is shown) repaint the route alone, not the scene
+                  for (final (layer, anims) in [
+                    (_Layer.scene, <Listenable>[widget.transform, _tilt, _liftCtl]),
+                    (_Layer.route, <Listenable>[widget.transform, _tilt, _liftCtl, _loop, widget.routeProgress]),
+                    (_Layer.labels, <Listenable>[widget.transform, _tilt, _liftCtl]),
+                  ])
+                    Positioned.fill(
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter: _IsoPainter(s: this, pal: p, layer: layer, repaint: Listenable.merge(anims)),
+                        ),
                       ),
                     ),
-                  ),
                   // 2b — off-screen host the artwork is captured from (removed once it has been)
                   if (_image == null && _svg != null) _captureHost(),
                   // 3 — pins, you-are-here, portal chips: upright, in screen space
@@ -1886,33 +2073,36 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     ];
   }
 
+  /// Where a leg ends at stairs, a lift, the moving walkway or a door, a callout
+  /// says what to do there; when the route goes on in another plan, tapping
+  /// it opens that plan.
   List<Widget> _chips(Matrix4 full, GemPalette p) {
     final res = <Widget>[];
     for (var i = 0; i < widget.legs.length; i++) {
       final leg = widget.legs[i];
-      if (leg.nextMapId == null || leg.points.isEmpty) continue;
+      if (leg.portal == null || leg.points.isEmpty) continue;
       final s = _screenOf(full, leg.points.last, z: _groundZ(leg.points.last));
-      if (!_onScreen(s, 100)) continue;
+      if (!_onScreen(s, 120)) continue;
+      final next = leg.nextMapId == null ? null : allMaps[leg.nextMapId!];
       res.add(
         Positioned(
           key: ValueKey('chip_$i'),
-          left: s.dx - 110,
-          top: s.dy - 48 - 22,
-          width: 220,
-          height: 44,
+          left: s.dx - 140,
+          top: s.dy - 64 - 26,
+          width: 280,
+          height: 64,
           child: Center(
             child: _ExitChip(
               pal: p,
-              icon: switch (leg.portal?.kind) {
+              icon: switch (leg.portal!.kind) {
                 PortalKind.stairs => Icons.stairs,
                 PortalKind.lift => Icons.elevator,
-                _ => Icons.login,
+                PortalKind.travelator => Icons.moving,
+                PortalKind.door => Icons.login,
               },
-              label: S.t(
-                'continue_on',
-                x: S.mapShort(allMaps[leg.nextMapId!]!),
-              ),
-              onTap: () => widget.onPortalTap(leg.nextMapId!),
+              label: leg.exitStep == null ? '' : S.step(leg.exitStep!),
+              detail: next == null ? null : S.t('tap_to_open', x: S.mapShort(next)),
+              onTap: next == null ? null : () => widget.onPortalTap(next.id),
             ),
           ),
         ),
@@ -1963,12 +2153,16 @@ class _GroundPainter extends CustomPainter {
   bool shouldRepaint(_GroundPainter old) => old.pal.dark != pal.dark;
 }
 
+/// The three painted layers of the model, bottom to top.
+enum _Layer { scene, route, labels }
+
 class _IsoPainter extends CustomPainter {
-  _IsoPainter({required this.s, required this.pal, required Listenable repaint})
+  _IsoPainter({required this.s, required this.pal, required this.layer, required Listenable repaint})
     : super(repaint: repaint);
 
   final _MuseumMapCanvasState s;
   final GemPalette pal;
+  final _Layer layer;
 
   @override
   bool shouldRepaint(covariant _IsoPainter old) => true;
@@ -1981,6 +2175,17 @@ class _IsoPainter extends CustomPainter {
     final zoom = _MuseumMapCanvasState._scaleOf(flat);
     final yaw = _MuseumMapCanvasState._angleOf(flat);
     final view = (Offset.zero & size).inflate(80);
+    switch (layer) {
+      case _Layer.scene:
+        _scene(canvas, full, zoom, yaw, view);
+      case _Layer.route:
+        _route(canvas, full);
+      case _Layer.labels:
+        _labels(canvas, full, flat, view, size);
+    }
+  }
+
+  void _scene(Canvas canvas, Matrix4 full, double zoom, double yaw, Rect view) {
     final focus = s._focusIds;
     final px = s._px;
 
@@ -2001,6 +2206,7 @@ class _IsoPainter extends CustomPainter {
     }
     _groundFills(canvas);
     _art(canvas, px);
+    _bayLines(canvas);
     canvas.restore();
 
     // ── 2. rooms and the things standing in them, back to front ──
@@ -2046,14 +2252,8 @@ class _IsoPainter extends CustomPainter {
       for (final pr in lit) {
         _prism(canvas, full, yaw, pr, view, true, _Pass.front);
       }
-      _figuresPaint(canvas, full, yaw, view, inside: lit);
+      _figuresPaint(canvas, full, yaw, view, focus: focus);
     }
-
-    // ── 3. route ──
-    _route(canvas, full);
-
-    // ── 4. names ──
-    _labels(canvas, full, flat, view, size);
   }
 
   Color _slabColor(String kind) => switch (kind) {
@@ -2183,99 +2383,137 @@ class _IsoPainter extends CustomPainter {
     }
   }
 
-  Color _figureColor(String id) => switch (id) {
-    // Memphis colossus: red granite. Tanis colossus: quartzite.
-    'ramesses_san_el_hagar' =>
-      pal.dark ? const Color(0xffc9a074) : const Color(0xffb98b62),
-    _ => pal.dark ? const Color(0xffc27a6c) : const Color(0xffad6c5e),
-  };
+  /// The painted stall lines of the car parks, on the plan's artwork.
+  void _bayLines(Canvas canvas) {
+    if (s._bays.isEmpty) return;
+    final paint = Paint()
+      ..color = (pal.dark ? Colors.white : Colors.black).withValues(alpha: pal.dark ? 0.16 : 0.12)
+      ..strokeWidth = 0.9;
+    for (final (a, b) in s._bays) {
+      canvas.drawLine(a, b, paint);
+    }
+  }
 
-  /// Statues that stand upright: the plan's elevation outline is raised on the
-  /// ground plane, turned to face the viewer (a billboard), with a little depth
-  /// so it still reads as a solid when the map is tilted.
+  /// Monuments: every block's visible faces, lit from the upper left, drawn far
+  /// to near. Faces are wound outwards consistently, so a face is visible when
+  /// its projection turns the same way as the block's base seen from above.
   void _figuresPaint(
     Canvas canvas,
     Matrix4 full,
     double yaw,
     Rect view, {
-    List<_Prism>? inside,
+    Set<String>? focus,
   }) {
     if (s._figures.isEmpty) return;
+    // with [focus]: only what stands in a focused region (walled or open, like
+    // the obelisk's plaza), drawn again above the veil
+    final rooms = focus == null
+        ? const <MapRegion>[]
+        : [for (final r in s.widget.regions) if (focus.contains(r.id)) r];
+    // direction towards the viewer: on the ground (sin yaw, cos yaw), and up
+    final tx = math.sin(yaw), ty = math.cos(yaw);
+    const tz = 0.7;
+    final figs = [
+      for (final f in s._figures)
+        if (focus == null || rooms.any((r) => r.contains(f.norm))) f,
+    ]..sort((a, b) => (a.anchor.dx * tx + a.anchor.dy * ty).compareTo(b.anchor.dx * tx + b.anchor.dy * ty));
+    for (final f in figs) {
+      final foot = project(full, f.anchor.dx, f.anchor.dy, 0);
+      final top = project(full, f.anchor.dx, f.anchor.dy, f.height);
+      if (!view.inflate(f.height * 2).contains(foot) && !view.contains(top)) continue;
+      if (f.outline != null) {
+        _outlineFigure(canvas, full, yaw, f, foot);
+        continue;
+      }
+      // contact shadow
+      final rim = project(full, f.anchor.dx + f.height * 0.22, f.anchor.dy, 0);
+      final rx = (rim - foot).distance;
+      canvas.drawOval(
+        Rect.fromCenter(center: foot, width: rx * 2.4, height: rx * 1.1),
+        Paint()..color = pal.shadow.withValues(alpha: pal.dark ? 0.4 : 0.2),
+      );
+      final n = f.xyz.length ~/ 3;
+      final sx = Float32List(n), sy = Float32List(n);
+      for (var i = 0; i < n; i++) {
+        final o = project(full, f.xyz[i * 3], f.xyz[i * 3 + 1], f.xyz[i * 3 + 2]);
+        sx[i] = o.dx;
+        sy[i] = o.dy;
+      }
+      // faces turned towards the viewer, far to near
+      final t = f.tris.length ~/ 3;
+      final keep = <int>[];
+      final depth = Float64List(t);
+      for (var k = 0; k < t; k++) {
+        if (f.normals[k * 3] * tx + f.normals[k * 3 + 1] * ty + f.normals[k * 3 + 2] * tz <= 0) continue;
+        final a = f.tris[k * 3] * 3, b = f.tris[k * 3 + 1] * 3, c = f.tris[k * 3 + 2] * 3;
+        depth[k] = (f.xyz[a] + f.xyz[b] + f.xyz[c]) * tx +
+            (f.xyz[a + 1] + f.xyz[b + 1] + f.xyz[c + 1]) * ty +
+            (f.xyz[a + 2] + f.xyz[b + 2] + f.xyz[c + 2]) * tz;
+        keep.add(k);
+      }
+      keep.sort((a, b) => depth[a].compareTo(depth[b]));
+      final pos = Float32List(keep.length * 6);
+      final cols = Int32List(keep.length * 3);
+      final shades = pal.dark ? f.litDark : f.lit;
+      for (var i = 0; i < keep.length; i++) {
+        final k = keep[i];
+        for (var j = 0; j < 3; j++) {
+          final v = f.tris[k * 3 + j];
+          pos[i * 6 + j * 2] = sx[v];
+          pos[i * 6 + j * 2 + 1] = sy[v];
+          cols[i * 3 + j] = shades[k];
+        }
+      }
+      // vertex colours only (BlendMode.dst keeps them, ignoring the paint)
+      canvas.drawVertices(ui.Vertices.raw(ui.VertexMode.triangles, pos, colors: cols), BlendMode.dst, Paint());
+    }
+  }
+
+  /// A statue drawn as its front elevation: the outline stood upright on the
+  /// floor, turned to face the viewer, with a little depth so it still reads as
+  /// a solid when the map is tilted.
+  void _outlineFigure(Canvas canvas, Matrix4 full, double yaw, _Figure f, Offset foot) {
     final cs = math.cos(yaw), sn = math.sin(yaw);
     // ground-plane directions: screen-right, and towards the viewer
     final rx = cs, ry = -sn, tx = sn, ty = cs;
-    final order =
-        [
-          for (final f in s._figures)
-            if (inside == null ||
-                inside.any((pr) => pr.region.contains(f.norm)))
-              f,
-        ]..sort(
-          (a, b) => project(
-            full,
-            a.anchor.dx,
-            a.anchor.dy,
-            0,
-          ).dy.compareTo(project(full, b.anchor.dx, b.anchor.dy, 0).dy),
-        );
-    for (final f in order) {
-      final h = f.height;
-      final half = h * 0.07; // half the thickness, along the view direction
-      Offset at(Offset p, double side) => project(
-        full,
-        f.anchor.dx + rx * p.dx * h + tx * side,
-        f.anchor.dy + ry * p.dx * h + ty * side,
-        p.dy * h,
-      );
-      final front = [for (final p in f.uv) at(p, half)];
-      final back = [for (final p in f.uv) at(p, -half)];
-      var l = double.infinity, t = double.infinity;
-      var r = -double.infinity, b = -double.infinity;
-      for (final o in [...front, ...back]) {
-        l = math.min(l, o.dx);
-        t = math.min(t, o.dy);
-        r = math.max(r, o.dx);
-        b = math.max(b, o.dy);
-      }
-      if (!view.overlaps(Rect.fromLTRB(l, t, r, b))) continue;
-      final c = _figureColor(f.id);
-      // contact shadow on the floor
-      final foot = project(full, f.anchor.dx, f.anchor.dy, 0);
-      final sh = project(full, f.anchor.dx + rx * h * 0.2, f.anchor.dy, 0);
-      canvas.drawOval(
-        Rect.fromCenter(
-          center: foot,
-          width: (sh.dx - foot.dx).abs() * 2.2,
-          height: (sh.dx - foot.dx).abs() * 0.9,
-        ),
-        Paint()..color = pal.shadow.withValues(alpha: pal.dark ? 0.45 : 0.22),
-      );
-      canvas.drawPath(
-        Path()..addPolygon(back, true),
-        Paint()..color = _shade(c, 0.55),
-      );
-      final n = f.uv.length;
-      for (var i = 0; i < n; i++) {
-        final j = (i + 1) % n;
-        canvas.drawPath(
-          Path()..addPolygon([front[i], front[j], back[j], back[i]], true),
-          Paint()
-            ..color = _shade(c, 0.66)
-            ..style = PaintingStyle.fill
-            ..isAntiAlias = true,
-        );
-      }
-      final face = Path()..addPolygon(front, true);
-      canvas.drawPath(face, Paint()..color = c);
-      canvas.drawPath(
-        face,
-        Paint()
-          ..color = _shade(c, 0.6)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.7
-          ..strokeJoin = StrokeJoin.round,
-      );
+    final h = f.height;
+    final half = h * 0.07;
+    Offset at(Offset p, double side) => project(
+      full,
+      f.anchor.dx + rx * p.dx * h + tx * side,
+      f.anchor.dy + ry * p.dx * h + ty * side,
+      p.dy * h,
+    );
+    final pts = f.outline!;
+    final front = [for (final p in pts) at(p, half)];
+    final back = [for (final p in pts) at(p, -half)];
+    final base = Color(f.color).withValues(alpha: 1);
+    final c = pal.dark ? _shade(base, 1.12) : base;
+    // contact shadow on the floor
+    final sh = project(full, f.anchor.dx + rx * h * 0.2, f.anchor.dy + ry * h * 0.2, 0);
+    final r = (sh - foot).distance;
+    canvas.drawOval(
+      Rect.fromCenter(center: foot, width: r * 2.2, height: r * 0.9),
+      Paint()..color = pal.shadow.withValues(alpha: pal.dark ? 0.45 : 0.22),
+    );
+    canvas.drawPath(Path()..addPolygon(back, true), Paint()..color = _shade(c, 0.55));
+    final side = Paint()
+      ..color = _shade(c, 0.66)
+      ..isAntiAlias = true;
+    for (var i = 0; i < pts.length; i++) {
+      final j = (i + 1) % pts.length;
+      canvas.drawPath(Path()..addPolygon([front[i], front[j], back[j], back[i]], true), side);
     }
+    final face = Path()..addPolygon(front, true);
+    canvas.drawPath(face, Paint()..color = c);
+    canvas.drawPath(
+      face,
+      Paint()
+        ..color = _shade(c, 0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 0.7
+        ..strokeJoin = StrokeJoin.round,
+    );
   }
 
   void _art(Canvas canvas, Size px) {
@@ -2429,14 +2667,19 @@ class _IsoPainter extends CustomPainter {
       final color = facing
           ? Color.lerp(dark, lit, k)!
           : Color.lerp(_shade(inner, 0.8), _shade(inner, 1.12), k)!;
-      final quad = Path()
-        ..moveTo(base[i].dx, base[i].dy)
-        ..lineTo(base[j].dx, base[j].dy)
-        ..lineTo(top[j].dx, top[j].dy)
-        ..lineTo(top[i].dx, top[i].dy)
-        ..close();
-      canvas.drawPath(quad, Paint()..color = color);
-      canvas.drawLine(top[i], top[j], rim);
+      final fill = Paint()..color = color;
+      for (final (t0, t1) in _solidRuns(pr.gaps.isEmpty ? const [] : pr.gaps[i])) {
+        final b0 = Offset.lerp(base[i], base[j], t0)!, b1 = Offset.lerp(base[i], base[j], t1)!;
+        final u0 = Offset.lerp(top[i], top[j], t0)!, u1 = Offset.lerp(top[i], top[j], t1)!;
+        final quad = Path()
+          ..moveTo(b0.dx, b0.dy)
+          ..lineTo(b1.dx, b1.dy)
+          ..lineTo(u1.dx, u1.dy)
+          ..lineTo(u0.dx, u0.dy)
+          ..close();
+        canvas.drawPath(quad, fill);
+        canvas.drawLine(u0, u1, rim);
+      }
     }
 
     if (pr.solid && pass != _Pass.back) {
@@ -2798,53 +3041,71 @@ class _ExitChip extends StatelessWidget {
     required this.pal,
     required this.icon,
     required this.label,
-    required this.onTap,
+    this.detail,
+    this.onTap,
   });
   final GemPalette pal;
   final IconData icon;
+
+  /// The instruction ("Take the stairs up to the 3rd floor").
   final String label;
-  final VoidCallback onTap;
+
+  /// Second line when the route goes on in another plan ("Tap to open …").
+  final String? detail;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) => Container(
     decoration: BoxDecoration(
       color: pal.accent,
-      borderRadius: BorderRadius.circular(22),
+      borderRadius: BorderRadius.circular(18),
       boxShadow: gemShadow(pal),
     ),
     child: Material(
       type: MaterialType.transparency,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(18),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 18, color: pal.onAccent),
-              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.all(5),
+                decoration: BoxDecoration(color: pal.onAccent.withValues(alpha: 0.18), shape: BoxShape.circle),
+                child: Icon(icon, size: 18, color: pal.onAccent),
+              ),
+              const SizedBox(width: 9),
               Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontFamily: 'Arial',
-                    fontSize: 13,
-                    fontWeight: FontWeight.w800,
-                    color: pal.onAccent,
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontFamily: 'Arial', fontSize: 13, height: 1.15, fontWeight: FontWeight.w800, color: pal.onAccent),
+                    ),
+                    if (detail != null)
+                      Text(
+                        detail!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontFamily: 'Arial', fontSize: 11.5, fontWeight: FontWeight.w600, color: pal.onAccent.withValues(alpha: 0.85)),
+                      ),
+                  ],
                 ),
               ),
-              const SizedBox(width: 4),
-              Icon(
-                Directionality.of(context) == TextDirection.rtl
-                    ? Icons.chevron_left
-                    : Icons.chevron_right,
-                size: 18,
-                color: pal.onAccent,
-              ),
+              if (onTap != null) ...[
+                const SizedBox(width: 4),
+                Icon(
+                  Directionality.of(context) == TextDirection.rtl ? Icons.chevron_left : Icons.chevron_right,
+                  size: 20,
+                  color: pal.onAccent,
+                ),
+              ],
             ],
           ),
         ),

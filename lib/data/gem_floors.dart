@@ -7,8 +7,8 @@
 //   * kExtraBlocks - Tutankhamun cases that were never extracted.
 //   * kExtraSteps  - stair flights (the plans' hatch strokes), drawn as treads.
 //
-// Same normalised (0..1) space as MapPlace.position. Nothing here is routed: kPortals,
-// kStairEdges, kPinLinks and the paths are untouched.
+// Same normalised (0..1) space as MapPlace.position. The routing graph (gem_nav.dart)
+// is built from these floors and treads by tools/build_nav.py.
 import 'gem_blocks.dart';
 
 class MapFloor {

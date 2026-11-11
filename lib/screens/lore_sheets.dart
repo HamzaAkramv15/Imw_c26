@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import '../data/gem_stories.dart';
 import '../i18n/strings.dart';
+import '../i18n/translations.dart';
 import '../theme.dart';
 import '../widgets/gem_ui.dart';
 import '../widgets/glyphs.dart';
@@ -53,7 +53,7 @@ class _AboutSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = context.pal;
-    final ar = S.ar;
+    final l = S.lang.index;
     return GemSheetFrame(
       child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(22, 12, 22, 24),
@@ -63,8 +63,8 @@ class _AboutSheet extends StatelessWidget {
           children: [
             GemEyebrow(S.t('about_museum')),
             const SizedBox(height: 6),
-            Text(ar ? kEpilogueTitleAr : kEpilogueTitle, style: TextStyle(fontSize: 24, height: 1.2, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.gold)),
-            for (final para in (ar ? kEpilogueAr : kEpilogue).split('\n\n')) ...[
+            Text(kEpilogue['title']![l], style: TextStyle(fontSize: 24, height: 1.2, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.gold)),
+            for (final para in kEpilogue['body']![l].split('\n\n')) ...[
               const SizedBox(height: 12),
               Text(para, style: TextStyle(fontFamily: 'Arial', fontSize: 15, height: 1.6, color: p.ink)),
             ],
@@ -72,7 +72,7 @@ class _AboutSheet extends StatelessWidget {
             Container(
               padding: const EdgeInsetsDirectional.fromSTEB(14, 4, 4, 4),
               decoration: BoxDecoration(border: BorderDirectional(start: BorderSide(color: p.gold, width: 3))),
-              child: Text(ar ? kEpilogueClosingAr : kEpilogueClosing, style: TextStyle(fontSize: 16, height: 1.45, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.ink)),
+              child: Text(kEpilogue['closing']![l], style: TextStyle(fontSize: 16, height: 1.45, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.ink)),
             ),
           ],
         ),

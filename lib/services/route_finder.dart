@@ -3,14 +3,38 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../data/gem_extras.dart';
-import '../data/gem_paths.dart';
+import '../data/gem_nav.dart';
+import '../data/gem_regions.dart';
 import '../models/map_models.dart';
 
 // ═══════════════════════════════════════════════════════════════
 //  Results
 // ═══════════════════════════════════════════════════════════════
 
-enum StepKind { start, left, right, enterBuilding, exitBuilding, stairs, lift, arrive, stop }
+enum StepKind {
+  start,
+  left,
+  right,
+  enterBuilding,
+  exitBuilding,
+  enterRoom,
+  door,
+
+  /// Through a stretch the plan leaves without a wall.
+  passage,
+
+  /// Over treads the plan draws inside a level (the plan does not say which
+  /// end is higher, so no direction is given).
+  steps,
+  stairs,
+  lift,
+  travelator,
+
+  /// Confirms the level reached after stairs, a lift or the moving walkway.
+  levelReached,
+  arrive,
+  stop,
+}
 
 @immutable
 class RouteStep {
@@ -20,6 +44,7 @@ class RouteStep {
     this.position,
     this.targetId,
     this.refMapId,
+    this.regionId,
     this.floor = 0,
     this.down = false,
     this.index = 0,
@@ -33,11 +58,14 @@ class RouteStep {
   /// Place named in the instruction ("turn left near …", "arrive at …").
   final String? targetId;
 
-  /// Map being entered (for [StepKind.enterBuilding]).
+  /// Map being entered or left (for [StepKind.enterBuilding] / [StepKind.exitBuilding]).
   final String? refMapId;
+
+  /// Hall, gallery or zone being entered (for [StepKind.enterRoom]).
+  final String? regionId;
   final int floor;
 
-  /// Stairs / lift go DOWN to [floor] (otherwise up).
+  /// Stairs / lift / travelator go DOWN to [floor] (otherwise up).
   final bool down;
 
   /// Stop number in a tour.
@@ -52,6 +80,7 @@ class RouteStep {
     position: position,
     targetId: targetId,
     refMapId: refMapId,
+    regionId: regionId,
     floor: floor,
     down: down,
     index: index,
@@ -64,26 +93,39 @@ class RouteStep {
     StepKind.right => Icons.turn_right,
     StepKind.enterBuilding => Icons.login,
     StepKind.exitBuilding => Icons.logout,
+    StepKind.enterRoom => Icons.meeting_room_outlined,
+    StepKind.door => Icons.door_front_door_outlined,
+    StepKind.passage => Icons.crop_free,
+    StepKind.steps => Icons.stairs_outlined,
     StepKind.stairs => Icons.stairs,
     StepKind.lift => Icons.elevator,
+    StepKind.travelator => Icons.moving,
+    StepKind.levelReached => Icons.check_circle_outline,
     StepKind.arrive => Icons.flag,
     StepKind.stop => Icons.place,
   };
 }
 
-/// The part of a route that lies on one map.
+/// The part of a route that lies on one map, between two level changes.
 @immutable
 class RouteLeg {
-  const RouteLeg(this.mapId, this.points, this.nodeIds, {this.nextMapId, this.portal});
+  const RouteLeg(this.mapId, this.points, this.nodeIds, {this.nextMapId, this.portal, this.exitStep});
   final String mapId;
 
   /// Normalised points on [mapId].
   final List<Offset> points;
   final List<String> nodeIds;
 
-  /// Set when the route leaves this map here (through a door, stairs or lift).
+  /// Set when the route continues on another map (through a door, stairs or lift).
   final String? nextMapId;
+
+  /// The portal taken at the end of this leg (also set for a level change that
+  /// stays on the same plan, e.g. the lift up to the Children's Museum).
   final Portal? portal;
+
+  /// The instruction for that portal ("Take the lift up to the 2nd floor"),
+  /// shown on the map where the leg ends.
+  final RouteStep? exitStep;
 }
 
 @immutable
@@ -94,12 +136,26 @@ class RouteResult {
     required this.meters,
     required this.seconds,
     required this.usesStairs,
+    this.stepFree = false,
+    this.usesTravelator = false,
+    this.unverifiedDoors = false,
   });
   final List<RouteLeg> legs;
   final List<RouteStep> steps;
   final double meters;
   final double seconds;
+
+  /// Climbs treads or takes the Grand Staircase somewhere along the way.
   final bool usesStairs;
+
+  /// Planned with the step-free profile (lifts and level floor only).
+  final bool stepFree;
+
+  /// Rides the moving walkway beside the Grand Staircase.
+  final bool usesTravelator;
+
+  /// Passes an opening the official plan does not draw (see MapDoor.verified).
+  final bool unverifiedDoors;
 
   Duration get walkTime => Duration(seconds: seconds.round());
   List<RouteLeg> legsOn(String mapId) => [for (final l in legs) if (l.mapId == mapId) l];
@@ -118,7 +174,7 @@ class TourResult {
 }
 
 // ═══════════════════════════════════════════════════════════════
-//  The graph: every map, plus the portals that join them
+//  The graph
 // ═══════════════════════════════════════════════════════════════
 
 class _Node {
@@ -129,76 +185,137 @@ class _Node {
 }
 
 class _Edge {
-  _Edge(this.to, this.meters, this.cost, {this.stairs = false, this.portal, this.via = const []});
+  _Edge(this.to, this.meters, this.cost, {this.via = const [], this.stairs = false, this.portal});
   final String to;
 
-  /// Bend points between the two nodes (wall-aware path), normalised.
+  /// Bend points between the two nodes, normalised, ordered towards [to].
   final List<Offset> via;
-  final double meters; // real length, used for distance/time
-  final double cost; // what the router minimises (stairs are penalised)
+  final double meters; // real length, used for distance and time
+  final double cost; // what the router minimises
   final bool stairs;
   final Portal? portal;
+
+  bool usableStepFree() => portal == null ? !stairs : portal!.stepFree;
 }
 
+/// A binary min-heap of (cost, node) pairs.
+class _Heap {
+  final List<double> _k = [];
+  final List<String> _v = [];
+  bool get isEmpty => _k.isEmpty;
+
+  void push(double k, String v) {
+    _k.add(k);
+    _v.add(v);
+    var i = _k.length - 1;
+    while (i > 0) {
+      final p = (i - 1) >> 1;
+      if (_k[p] <= _k[i]) break;
+      _swap(i, p);
+      i = p;
+    }
+  }
+
+  (double, String) pop() {
+    final top = (_k.first, _v.first);
+    final lk = _k.removeLast(), lv = _v.removeLast();
+    if (_k.isNotEmpty) {
+      _k[0] = lk;
+      _v[0] = lv;
+      var i = 0;
+      while (true) {
+        final l = 2 * i + 1, r = l + 1;
+        var m = i;
+        if (l < _k.length && _k[l] < _k[m]) m = l;
+        if (r < _k.length && _k[r] < _k[m]) m = r;
+        if (m == i) break;
+        _swap(i, m);
+        i = m;
+      }
+    }
+    return top;
+  }
+
+  void _swap(int a, int b) {
+    final k = _k[a], v = _v[a];
+    _k[a] = _k[b];
+    _v[a] = _v[b];
+    _k[b] = k;
+    _v[b] = v;
+  }
+}
+
+/// Every map's walkable graph (generated from the plans, see tools/build_nav.py)
+/// joined by the portals. Two profiles: standard, and step-free (no treads, no
+/// staircase, no travelator: lifts and level floor only).
 class MuseumGraph {
   MuseumGraph(
     this.maps, {
-    this.portals = const [],
-    this.stairEdges = const {},
-    this.redirects = const {},
-    this.placeFloors = const {},
+    this.nodes = kNavNodes,
+    List<NavEdge>? edges,
+    this.portals = kPortals,
+    this.redirects = kRouteRedirects,
+    this.placeFloors = kPlaceFloor,
+    this.doors = kDoors,
   }) {
-    _build();
+    _build(edges ?? kNavEdges);
   }
 
   final Map<String, GemMap> maps;
+  final Map<String, NavNode> nodes;
   final List<Portal> portals;
-  final Set<String> stairEdges;
   final Map<String, String> redirects;
   final Map<String, int> placeFloors;
+  final List<MapDoor> doors;
 
   /// Average walking speed, m/s.
   static const double walkSpeed = 1.25;
-  static const double _stairsPenalty = 2.5;
+
+  /// Treads cost more than level floor (effort), so a level detour of up to
+  /// that much is preferred.
+  static const double _treadPenalty = 1.6;
+  static const double _staircasePenalty = 2.5;
   static const double _liftWaitSeconds = 40;
+  static const double _turnAngle = 0.6; // radians, ~35°
+  static const double _minTurnSegment = 12; // map units
 
   final Map<String, _Node> _nodes = {};
   final Map<String, List<_Edge>> _adj = {};
   final Map<String, MapPlace> _places = {};
+  late final Map<String, MapDoor> _doorById = {for (final d in doors) d.id: d};
 
   // ── build ──────────────────────────────────────────────────────
-  void _build() {
+  void _build(List<NavEdge> edges) {
     for (final m in maps.values) {
       for (final p in m.places) {
-        _nodes[p.id] = _Node(p.id, m.id, p.position);
         _places[p.id] = p;
+        // a place off the walkable floor of its plan (upper level) still needs
+        // a node: its portals reach it
+        _nodes[p.id] = _Node(p.id, m.id, nodes[p.id]?.position ?? p.position);
       }
-      m.junctions.forEach((id, pos) => _nodes[id] = _Node(id, m.id, pos));
     }
-    for (final m in maps.values) {
-      for (final e in m.edges) {
-        _link(e.$1, e.$2, stairs: stairEdges.contains('${e.$1}|${e.$2}') || stairEdges.contains('${e.$2}|${e.$1}'));
-      }
-      for (final p in m.places.where((p) => p.autoConnect)) {
-        final linked = kPinLinks[p.id];
-        if (linked != null && m.junctions.containsKey(linked)) {
-          _link(p.id, linked);
-          continue;
-        }
-        String? best;
-        var bd = double.infinity;
-        for (final j in m.junctions.entries) {
-          final d = _unitDist(m, p.position, j.value);
-          if (d < bd) {
-            bd = d;
-            best = j.key;
-          }
-        }
-        if (best != null) _link(p.id, best);
-      }
+    nodes.forEach((id, n) {
+      if (maps.containsKey(n.mapId)) _nodes[id] = _Node(id, n.mapId, n.position);
+    });
+    for (final e in edges) {
+      final a = _nodes[e.a], b = _nodes[e.b];
+      if (a == null || b == null || a.mapId != b.mapId) continue;
+      final m = maps[a.mapId]!;
+      final meters = _polyLength(m, [a.pos, ...e.via, b.pos]) * m.metersPerPixel;
+      final cost = e.stairs ? meters * _treadPenalty : meters;
+      _adj.putIfAbsent(e.a, () => []).add(_Edge(e.b, meters, cost, via: e.via, stairs: e.stairs));
+      _adj.putIfAbsent(e.b, () => []).add(_Edge(e.a, meters, cost, via: e.via.reversed.toList(), stairs: e.stairs));
     }
     for (final pt in portals) {
-      _link(pt.a, pt.b, meters: pt.meters, portal: pt, stairs: pt.kind == PortalKind.stairs);
+      if (!_nodes.containsKey(pt.a) || !_nodes.containsKey(pt.b)) continue;
+      final cost = switch (pt.kind) {
+        PortalKind.stairs => pt.meters * _staircasePenalty,
+        PortalKind.lift => pt.meters + _liftWaitSeconds * walkSpeed,
+        PortalKind.door || PortalKind.travelator => pt.meters,
+      };
+      final stairs = pt.kind == PortalKind.stairs;
+      _adj.putIfAbsent(pt.a, () => []).add(_Edge(pt.b, pt.meters, cost, stairs: stairs, portal: pt));
+      _adj.putIfAbsent(pt.b, () => []).add(_Edge(pt.a, pt.meters, cost, stairs: stairs, portal: pt));
     }
   }
 
@@ -216,36 +333,22 @@ class MuseumGraph {
     return d;
   }
 
-  void _link(String a, String b, {double? meters, bool stairs = false, Portal? portal}) {
-    final na = _nodes[a], nb = _nodes[b];
-    if (na == null || nb == null) return;
-    final m = maps[na.mapId]!;
-    var via = const <Offset>[];
-    if (portal == null && na.mapId == nb.mapId) {
-      final fwd = a.compareTo(b) < 0;
-      final stored = kEdgePaths[fwd ? '$a|$b' : '$b|$a'];
-      if (stored != null) via = fwd ? stored : stored.reversed.toList();
-    }
-    final len = meters ?? _polyLength(m, [na.pos, ...via, nb.pos]) * m.metersPerPixel;
-    final cost = stairs ? len * _stairsPenalty : len;
-    _adj.putIfAbsent(a, () => []).add(_Edge(b, len, cost, stairs: stairs, portal: portal, via: via));
-    _adj.putIfAbsent(b, () => []).add(_Edge(a, len, cost, stairs: stairs, portal: portal, via: via.reversed.toList()));
-  }
-
-  // ── helpers ────────────────────────────────────────────────────
+  // ── lookups ────────────────────────────────────────────────────
   bool has(String id) => _nodes.containsKey(id);
 
-  /// Position (normalised) and map of any node (place or junction).
+  /// Position (normalised) and map of any node.
   Offset? positionOf(String id) => _nodes[id]?.pos;
   String? mapOf(String id) => _nodes[id]?.mapId;
 
-  /// Closest routable node (place or junction) to a point on a map.
+  /// Closest routable node to a point on a map (only nodes that have a
+  /// connection, so a tap never lands on an unreachable pin).
   String? nearestNodeId(String mapId, Offset pos) {
     final m = maps[mapId];
     if (m == null) return null;
     String? best;
     var bd = double.infinity;
-    for (final n in _nodes.values.where((n) => n.mapId == mapId)) {
+    for (final n in _nodes.values) {
+      if (n.mapId != mapId || (_adj[n.id]?.isEmpty ?? true)) continue;
       final d = _unitDist(m, n.pos, pos);
       if (d < bd) {
         bd = d;
@@ -257,10 +360,11 @@ class MuseumGraph {
 
   int _floorOf(String nodeId) => placeFloors[nodeId] ?? maps[_nodes[nodeId]!.mapId]!.level;
 
-  _Edge? _edge(String a, String b) {
+  _Edge? _edge(String a, String b, bool stepFree) {
     _Edge? best;
     for (final e in _adj[a] ?? const <_Edge>[]) {
-      if (e.to == b && (best == null || e.cost < best.cost)) best = e;
+      if (e.to != b || (stepFree && !e.usableStepFree())) continue;
+      if (best == null || e.cost < best.cost) best = e;
     }
     return best;
   }
@@ -271,6 +375,7 @@ class MuseumGraph {
     var bd = maxUnits;
     for (final p in m.places) {
       if (p.category == PlaceCategory.facility || p.category == PlaceCategory.parking) continue;
+      if (placeFloors.containsKey(p.id)) continue; // not on this level
       final d = _unitDist(m, p.position, pos);
       if (d < bd) {
         bd = d;
@@ -282,134 +387,172 @@ class MuseumGraph {
 
   ({Map<String, double> dist, Map<String, String> prev}) _dijkstra(
     String from, {
-    required bool avoidStairs,
+    required bool stepFree,
     String? stopAt,
   }) {
-    final dist = <String, double>{for (final k in _nodes.keys) k: double.infinity};
+    final dist = <String, double>{from: 0};
     final prev = <String, String>{};
-    final open = _nodes.keys.toSet();
-    dist[from] = 0;
-    while (open.isNotEmpty) {
-      String? u;
-      var best = double.infinity;
-      for (final k in open) {
-        final d = dist[k]!;
-        if (d < best) {
-          best = d;
-          u = k;
-        }
-      }
-      if (u == null || u == stopAt) break;
-      open.remove(u);
+    final done = <String>{};
+    final heap = _Heap()..push(0, from);
+    while (!heap.isEmpty) {
+      final (d, u) = heap.pop();
+      if (!done.add(u)) continue;
+      if (u == stopAt) break;
       for (final e in _adj[u] ?? const <_Edge>[]) {
-        if (avoidStairs && e.stairs) continue;
-        if (!open.contains(e.to)) continue;
-        final alt = best + e.cost;
-        if (alt < dist[e.to]!) {
+        if (stepFree && !e.usableStepFree()) continue;
+        final alt = d + e.cost;
+        if (alt < (dist[e.to] ?? double.infinity)) {
           dist[e.to] = alt;
           prev[e.to] = u;
+          heap.push(alt, e.to);
         }
       }
     }
     return (dist: dist, prev: prev);
   }
 
+  /// Ids of places that cannot be reached from [from] with the profile.
+  List<String> unreachableFrom(String from, {bool avoidStairs = false}) {
+    final d = _dijkstra(from, stepFree: avoidStairs).dist;
+    return [
+      for (final id in _places.keys)
+        if (!d.containsKey(redirects[id] ?? id)) id,
+    ];
+  }
+
   // ── single route ───────────────────────────────────────────────
   RouteResult? find(String from, String to, {bool avoidStairs = false}) {
     to = redirects[to] ?? to;
+    from = redirects[from] ?? from;
     if (from == to || !_nodes.containsKey(from) || !_nodes.containsKey(to)) return null;
-    final r = _dijkstra(from, avoidStairs: avoidStairs, stopAt: to);
-    if (r.dist[to]!.isInfinite) return null;
+    final r = _dijkstra(from, stepFree: avoidStairs, stopAt: to);
+    if (!r.dist.containsKey(to)) return null;
     final ids = <String>[to];
-    var cur = to;
-    while (cur != from) {
-      cur = r.prev[cur]!;
-      ids.add(cur);
+    while (ids.last != from) {
+      ids.add(r.prev[ids.last]!);
     }
-    return _assemble(ids.reversed.toList());
+    return _assemble(ids.reversed.toList(), avoidStairs);
   }
 
-  RouteResult _assemble(List<String> ids) {
+  MapRegion? _roomAt(String mapId, Offset p) {
+    MapRegion? best;
+    for (final r in regionsFor(mapId)) {
+      if (r.kind != RegionKind.gallery && r.kind != RegionKind.hall && r.kind != RegionKind.zone) continue;
+      if (r.contains(p) && (best == null || r.area < best.area)) best = r;
+    }
+    return best;
+  }
+
+  RouteResult _assemble(List<String> ids, bool stepFree) {
     final legs = <RouteLeg>[];
     final raw = <(RouteStep, double)>[]; // step + cumulative metres where it happens
     var meters = 0.0, seconds = 0.0;
-    var usesStairs = false;
+    var usesStairs = false, travelator = false, unverified = false;
 
-    var curMap = _nodes[ids.first]!.mapId;
+    final first = _nodes[ids.first]!;
+    var curMap = first.mapId;
     var legIds = <String>[ids.first];
-    var legPts = <Offset>[_nodes[ids.first]!.pos];
+    var legPts = <Offset>[first.pos];
+    var legStart = 0.0; // metres at the start of the current leg
+    var legMeters = <double>[0]; // cumulative metres at each leg point
+    String? room = _roomAt(curMap, first.pos)?.id;
+    var onSteps = false; // the previous edge climbed treads
 
     raw.add((
-      RouteStep(StepKind.start, mapId: curMap, position: _nodes[ids.first]!.pos, targetId: _places.containsKey(ids.first) ? ids.first : null),
+      RouteStep(StepKind.start, mapId: curMap, position: first.pos, targetId: _places.containsKey(ids.first) ? ids.first : null),
       0,
     ));
 
-    void closeLeg({String? next, Portal? portal}) {
-      legs.add(RouteLeg(curMap, List.of(legPts), List.of(legIds), nextMapId: next, portal: portal));
+    void closeLeg({String? next, Portal? portal, RouteStep? exit}) {
+      _turns(curMap, legPts, legMeters, legStart, raw);
+      legs.add(RouteLeg(curMap, List.of(legPts), List.of(legIds), nextMapId: next, portal: portal, exitStep: exit));
     }
 
     for (var i = 1; i < ids.length; i++) {
       final a = ids[i - 1], b = ids[i];
-      final e = _edge(a, b)!;
+      final e = _edge(a, b, stepFree)!;
       final na = _nodes[a]!, nb = _nodes[b]!;
-      meters += e.meters;
-      seconds += e.meters / walkSpeed;
       if (e.stairs) usesStairs = true;
 
       if (e.portal != null) {
         final kind = e.portal!.kind;
+        if (kind == PortalKind.travelator) travelator = true;
         final goesDown = _floorOf(b) < _floorOf(a);
         final leaving = kOutdoorMaps.contains(nb.mapId) && !kOutdoorMaps.contains(na.mapId) || kSubMapParent[na.mapId] == nb.mapId;
         final step = switch (kind) {
           PortalKind.door => RouteStep(leaving ? StepKind.exitBuilding : StepKind.enterBuilding, mapId: na.mapId, position: na.pos, refMapId: leaving ? na.mapId : nb.mapId),
           PortalKind.stairs => RouteStep(StepKind.stairs, mapId: na.mapId, position: na.pos, floor: _floorOf(b), down: goesDown),
           PortalKind.lift => RouteStep(StepKind.lift, mapId: na.mapId, position: na.pos, floor: _floorOf(b), down: goesDown),
+          PortalKind.travelator => RouteStep(StepKind.travelator, mapId: na.mapId, position: na.pos, floor: _floorOf(b), down: goesDown),
         };
-        if (kind == PortalKind.lift) seconds += _liftWaitSeconds;
-        raw.add((step, meters - e.meters));
-        if (na.mapId != nb.mapId) {
-          closeLeg(next: nb.mapId, portal: e.portal);
-          curMap = nb.mapId;
-          legIds = <String>[b];
-          legPts = <Offset>[nb.pos];
-        } else {
-          legIds.add(b);
-          legPts.add(nb.pos);
+        raw.add((step, meters));
+        meters += e.meters;
+        seconds += e.meters / walkSpeed + (kind == PortalKind.lift ? _liftWaitSeconds : 0);
+        // on the other side: say which level the visitor is now on
+        if (kind != PortalKind.door && _floorOf(a) != _floorOf(b)) {
+          raw.add((RouteStep(StepKind.levelReached, mapId: nb.mapId, position: nb.pos, floor: _floorOf(b)), meters));
         }
+        onSteps = false;
+        // every portal is a level change or a change of plan: the leg ends here
+        // (never a straight line drawn across the plan to the other level)
+        closeLeg(next: na.mapId != nb.mapId ? nb.mapId : null, portal: e.portal, exit: step);
+        curMap = nb.mapId;
+        legIds = <String>[b];
+        legPts = <Offset>[nb.pos];
+        legStart = meters;
+        legMeters = <double>[0];
+        room = _roomAt(curMap, nb.pos)?.id;
         continue;
       }
 
+      // treads drawn on the plan: one instruction where they begin
+      String? stepsInto;
+      if (e.stairs && !onSteps) {
+        final r = _roomAt(nb.mapId, nb.pos);
+        stepsInto = r != null && r.id != room ? r.id : null;
+        raw.add((
+          RouteStep(StepKind.steps, mapId: na.mapId, position: na.pos, regionId: stepsInto,
+              targetId: stepsInto == null ? null : r!.placeId),
+          meters,
+        ));
+      }
+      onSteps = e.stairs;
+
+      final m = maps[nb.mapId]!;
+      var prevPt = legPts.last;
+      for (final p in [...e.via, nb.pos]) {
+        legMeters.add(legMeters.last + _unitDist(m, prevPt, p) * m.metersPerPixel);
+        legPts.add(p);
+        prevPt = p;
+      }
       legIds.add(b);
-      legPts
-        ..addAll(e.via)
-        ..add(nb.pos);
-      // Turn detection at b (needs a walkable edge after it).
+      meters += e.meters;
+      seconds += e.meters / walkSpeed;
+
       if (i + 1 < ids.length) {
-        final next = _edge(b, ids[i + 1]);
-        if (next != null && next.portal == null) {
-          final m = maps[nb.mapId]!;
-          final pIn = e.via.isNotEmpty ? e.via.last : na.pos;
-          final nc = _nodes[ids[i + 1]]!;
-          final pOut = next.via.isNotEmpty ? next.via.first : nc.pos;
-          final va = Offset((nb.pos.dx - pIn.dx) * m.imageSize.width, (nb.pos.dy - pIn.dy) * m.imageSize.height);
-          final vb = Offset((pOut.dx - nb.pos.dx) * m.imageSize.width, (pOut.dy - nb.pos.dy) * m.imageSize.height);
-          if (va.distance > 10 && vb.distance > 10) {
-            final cross = va.dx * vb.dy - va.dy * vb.dx; // y points down → positive = turning right
-            final dot = va.dx * vb.dx + va.dy * vb.dy;
-            final angle = math.atan2(cross, dot);
-            if (angle.abs() > 0.6) {
-              raw.add((
-                RouteStep(
-                  angle > 0 ? StepKind.right : StepKind.left,
-                  mapId: nb.mapId,
-                  position: nb.pos,
-                  targetId: _nearPlace(nb.mapId, nb.pos, 80 * 1.0),
-                ),
-                meters,
-              ));
-            }
+        final door = _doorById[b];
+        if (door != null) {
+          final next = _edge(b, ids[i + 1], stepFree);
+          final after = next == null || next.portal != null ? null : (next.via.isNotEmpty ? next.via.first : _nodes[ids[i + 1]]!.pos);
+          final before = legPts[legPts.length - 2];
+          // only when the route really goes through (not along the wall past
+          // it): across a doorway's line, or from one room into another
+          // through a passage (a passage opens a corner, not one straight wall)
+          final through = after != null &&
+              (door.kind == DoorKind.passage
+                  ? _roomAt(nb.mapId, before)?.id != _roomAt(nb.mapId, after)?.id
+                  : _side(door, before) * _side(door, after) < 0);
+          if (through) {
+            raw.add((RouteStep(door.kind == DoorKind.passage ? StepKind.passage : StepKind.door, mapId: nb.mapId, position: nb.pos), meters));
+            if (!door.verified) unverified = true;
           }
         }
+        final r = _roomAt(nb.mapId, nb.pos);
+        // (entering a room up the treads was already said with the steps)
+        if (r != null && r.id != room && r.id != stepsInto) {
+          raw.add((RouteStep(StepKind.enterRoom, mapId: nb.mapId, position: nb.pos, regionId: r.id, targetId: r.placeId), meters));
+        }
+        room = r?.id ?? room;
       }
     }
     closeLeg();
@@ -420,15 +563,61 @@ class MuseumGraph {
       meters,
     ));
 
+    // turns were added per leg: put every step in walking order (ties keep
+    // their insertion order — List.sort is not stable on its own)
+    final order = List<int>.generate(raw.length, (i) => i)
+      ..sort((x, y) {
+        final c = raw[x].$2.compareTo(raw[y].$2);
+        return c != 0 ? c : x.compareTo(y);
+      });
+    raw.setAll(0, [for (final i in order) raw[i]]);
     final steps = <RouteStep>[
-      for (var i = 0; i < raw.length; i++)
-        raw[i].$1.withMeters(i + 1 < raw.length ? raw[i + 1].$2 - raw[i].$2 : 0),
+      for (var i = 0; i < raw.length; i++) raw[i].$1.withMeters(i + 1 < raw.length ? raw[i + 1].$2 - raw[i].$2 : 0),
     ];
-    return RouteResult(legs: legs, steps: steps, meters: meters, seconds: seconds, usesStairs: usesStairs);
+    return RouteResult(
+      legs: legs,
+      steps: steps,
+      meters: meters,
+      seconds: seconds,
+      usesStairs: usesStairs,
+      stepFree: stepFree,
+      usesTravelator: travelator,
+      unverifiedDoors: unverified,
+    );
+  }
+
+  /// Which side of a door's wall [p] is on (+1 / -1).
+  double _side(MapDoor d, Offset p) {
+    final m = maps[d.mapId]!;
+    final ax = (d.b.dx - d.a.dx) * m.imageSize.width, ay = (d.b.dy - d.a.dy) * m.imageSize.height;
+    final px = (p.dx - d.a.dx) * m.imageSize.width, py = (p.dy - d.a.dy) * m.imageSize.height;
+    return (ax * py - ay * px).sign;
+  }
+
+  /// Turn instructions along one leg: at every bend sharper than [_turnAngle]
+  /// whose two sides are long enough to be a real change of direction.
+  void _turns(String mapId, List<Offset> pts, List<double> cum, double start, List<(RouteStep, double)> out) {
+    final m = maps[mapId]!;
+    var lastAt = -double.infinity;
+    for (var i = 1; i + 1 < pts.length; i++) {
+      final va = Offset((pts[i].dx - pts[i - 1].dx) * m.imageSize.width, (pts[i].dy - pts[i - 1].dy) * m.imageSize.height);
+      final vb = Offset((pts[i + 1].dx - pts[i].dx) * m.imageSize.width, (pts[i + 1].dy - pts[i].dy) * m.imageSize.height);
+      if (va.distance < _minTurnSegment || vb.distance < _minTurnSegment) continue;
+      final cross = va.dx * vb.dy - va.dy * vb.dx; // y points down → positive = turning right
+      final dot = va.dx * vb.dx + va.dy * vb.dy;
+      final angle = math.atan2(cross, dot);
+      final at = start + cum[i];
+      if (angle.abs() < _turnAngle || at - lastAt < 8) continue;
+      lastAt = at;
+      out.add((
+        RouteStep(angle > 0 ? StepKind.right : StepKind.left, mapId: mapId, position: pts[i], targetId: _nearPlace(mapId, pts[i], 80)),
+        at,
+      ));
+    }
   }
 
   // ── tours ──────────────────────────────────────────────────────
-  /// Orders [stops] (nearest-neighbour + 2-opt on real walking distances)
+  /// Orders [stops] (nearest-neighbour + 2-opt on real walking costs)
   /// and joins them into one route starting at [start].
   TourResult? tour(String start, List<String> stops, {bool avoidStairs = false, bool optimize = true}) {
     final ids = <String>[];
@@ -439,41 +628,36 @@ class MuseumGraph {
     if (ids.isEmpty || !_nodes.containsKey(start)) return null;
 
     final all = [start, ...ids];
-    final d = <String, Map<String, double>>{for (final a in all) a: _dijkstra(a, avoidStairs: avoidStairs).dist};
-    final reachable = [for (final s in ids) if (d[start]![s]!.isFinite) s];
-    final skipped = [for (final s in ids) if (!d[start]![s]!.isFinite) s];
+    final d = <String, Map<String, double>>{for (final a in all) a: _dijkstra(a, stepFree: avoidStairs).dist};
+    double dd(String a, String b) => d[a]![b] ?? double.infinity;
+    final reachable = [for (final s in ids) if (dd(start, s).isFinite) s];
+    final skipped = [for (final s in ids) if (!dd(start, s).isFinite) s];
     if (reachable.isEmpty) return null;
 
     double cost(List<String> o) {
-      var c = d[start]![o.first]!;
+      var c = dd(start, o.first);
       for (var i = 0; i + 1 < o.length; i++) {
-        c += d[o[i]]![o[i + 1]]!;
+        c += dd(o[i], o[i + 1]);
       }
       return c;
     }
 
     var order = List<String>.of(reachable);
     if (optimize && order.length > 1) {
-      // nearest neighbour
       final left = List<String>.of(reachable);
       order = [];
       var at = start;
       while (left.isNotEmpty) {
-        left.sort((a, b) => d[at]![a]!.compareTo(d[at]![b]!));
+        left.sort((a, b) => dd(at, a).compareTo(dd(at, b)));
         at = left.removeAt(0);
         order.add(at);
       }
-      // 2-opt
       var improved = true;
       while (improved) {
         improved = false;
         for (var i = 0; i < order.length - 1; i++) {
           for (var j = i + 1; j < order.length; j++) {
-            final cand = [
-              ...order.sublist(0, i),
-              ...order.sublist(i, j + 1).reversed,
-              ...order.sublist(j + 1),
-            ];
+            final cand = [...order.sublist(0, i), ...order.sublist(i, j + 1).reversed, ...order.sublist(j + 1)];
             if (cost(cand) + 1e-6 < cost(order)) {
               order = cand;
               improved = true;
@@ -481,12 +665,14 @@ class MuseumGraph {
           }
         }
       }
+      // 2-opt finds a local optimum: never return worse than the order given
+      if (cost(reachable) < cost(order)) order = List<String>.of(reachable);
     }
 
     final legs = <RouteLeg>[];
     final steps = <RouteStep>[];
     var meters = 0.0, seconds = 0.0;
-    var stairs = false;
+    var stairs = false, travelator = false, unverified = false;
     var from = start;
     for (var i = 0; i < order.length; i++) {
       final r = find(from, order[i], avoidStairs: avoidStairs);
@@ -494,21 +680,30 @@ class MuseumGraph {
       legs.addAll(r.legs);
       for (final s in r.steps) {
         if (s.kind == StepKind.start && i > 0) continue;
-        if (s.kind == StepKind.arrive) {
-          steps.add(RouteStep(StepKind.stop, mapId: s.mapId, position: s.position, targetId: s.targetId, index: i + 1));
-        } else {
-          steps.add(s);
-        }
+        steps.add(s.kind == StepKind.arrive
+            ? RouteStep(StepKind.stop, mapId: s.mapId, position: s.position, targetId: s.targetId, index: i + 1)
+            : s);
       }
       meters += r.meters;
       seconds += r.seconds;
       stairs = stairs || r.usesStairs;
+      travelator = travelator || r.usesTravelator;
+      unverified = unverified || r.unverifiedDoors;
       from = order[i];
     }
     return TourResult(
       order: order,
       skipped: skipped,
-      route: RouteResult(legs: legs, steps: steps, meters: meters, seconds: seconds, usesStairs: stairs),
+      route: RouteResult(
+        legs: legs,
+        steps: steps,
+        meters: meters,
+        seconds: seconds,
+        usesStairs: stairs,
+        stepFree: avoidStairs,
+        usesTravelator: travelator,
+        unverifiedDoors: unverified,
+      ),
     );
   }
 }

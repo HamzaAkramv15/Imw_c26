@@ -198,7 +198,7 @@ class _SearchPageState extends State<SearchPage> {
             style: TextStyle(
               fontFamily: 'Arial',
               fontSize: 11,
-              letterSpacing: 1.6,
+              letterSpacing: S.tracking(1.6),
               color: p.gold,
               fontWeight: FontWeight.w800,
             ),

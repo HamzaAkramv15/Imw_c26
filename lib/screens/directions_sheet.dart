@@ -63,6 +63,20 @@ class DirectionsSheet extends StatelessWidget {
                             _stat(context, Icons.directions_walk, S.minutes(route.walkTime)),
                           ],
                         ),
+                        for (final note in [
+                          if (route.usesStairs && !route.stepFree) (Icons.stairs, S.t('stairs_note')),
+                          if (route.usesTravelator) (Icons.moving, S.t('travelator_note')),
+                          if (route.unverifiedDoors) (Icons.info_outline, S.t('unverified_door')),
+                        ]) ...[
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(note.$1, size: 15, color: p.muted),
+                              const SizedBox(width: 6),
+                              Expanded(child: Text(note.$2, style: TextStyle(fontFamily: 'Arial', fontSize: 12.5, color: p.muted))),
+                            ],
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -72,7 +86,7 @@ class DirectionsSheet extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 6, 18, 6),
               child: Material(
-                color: avoid ? p.accent.withValues(alpha: .10) : Colors.white,
+                color: avoid ? p.accent.withValues(alpha: .10) : p.surface,
                 borderRadius: BorderRadius.circular(18),
                 child: SwitchListTile(
                   contentPadding: const EdgeInsets.symmetric(horizontal: 14),

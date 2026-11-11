@@ -13,13 +13,19 @@ class StoryBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final p = context.pal;
-    final ar = S.ar;
-    final hook = ar ? story.hookAr : story.hook;
-    final body = ar ? story.storyAr : story.story;
-    final closing = ar ? story.closingAr : story.closing;
+    final l = S.lang;
+    final own = story.availableIn(l);
+    final hook = story.hookIn(l);
+    final body = story.storyIn(l);
+    final closing = story.closingIn(l);
+    // a story only in English is laid out left-to-right whatever the app language
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        if (!own) ...[
+          Text(S.t('story_in_english'), style: TextStyle(fontFamily: 'Arial', fontSize: 12, fontWeight: FontWeight.w700, color: p.muted)),
+          const SizedBox(height: 6),
+        ],
         Text(hook, style: TextStyle(fontSize: 21, height: 1.25, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.gold)),
         for (final para in body.split('\n\n')) ...[
           const SizedBox(height: 12),

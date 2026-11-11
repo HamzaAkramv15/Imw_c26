@@ -14,8 +14,18 @@ const double kMaxTilt = 0.92; // ~53°
 /// perspective. Heights (`z`) are in map units, like x and y, so a wall's
 /// height scales with zoom exactly as it should.
 class IsoCamera {
-  IsoCamera({required this.center, required this.tilt, required Size viewport})
-    : distance = math.max(viewport.width, viewport.height) * 2.2;
+  /// [reach] is how far (screen px) any part of the plan, wall tops included,
+  /// lies from the tilt axis. The camera is kept far enough back that no point
+  /// of the plan can get past it (w would reach 0 and the picture flips).
+  IsoCamera({
+    required this.center,
+    required this.tilt,
+    required Size viewport,
+    double reach = 0,
+  }) : distance = math.max(
+         math.max(viewport.width, viewport.height) * 2.2,
+         reach / 0.62,
+       );
 
   final Offset center;
 
@@ -48,7 +58,8 @@ class IsoCamera {
 Offset project(Matrix4 m, double x, double y, [double z = 0]) {
   final s = m.storage;
   final w = s[3] * x + s[7] * y + s[11] * z + s[15];
-  final inv = w.abs() < 1e-9 ? 1.0 : 1 / w;
+  // never divide by (nearly) zero or a negative w: that is the flipped picture
+  final inv = 1 / (w < 0.15 ? 0.15 : w);
   return Offset(
     (s[0] * x + s[4] * y + s[8] * z + s[12]) * inv,
     (s[1] * x + s[5] * y + s[9] * z + s[13]) * inv,

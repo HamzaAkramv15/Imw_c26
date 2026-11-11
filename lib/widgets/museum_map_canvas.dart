@@ -137,6 +137,12 @@ class _Slab {
   final Offset centroid;
   final int sign;
 
+  /// Convex hull, bounds and winding of the footprint (map px): what the
+  /// painter's-order test in [_slabFront] works with. Built once, on first use.
+  late final List<Offset> hull = _hullOf(pts);
+  late final Rect bounds = _boundsOf(pts);
+  late final int hullSign = _signOf(hull);
+
   /// Centroid in normalised (0..1) space, to find the room a slab stands in.
   Offset get normCentroid {
     var x = 0.0, y = 0.0;
@@ -158,6 +164,118 @@ class _Slab {
     }
     return inside;
   }
+}
+
+List<Offset> _hullOf(List<Offset> pts) {
+  final p = [...pts]
+    ..sort((a, b) => a.dx != b.dx ? a.dx.compareTo(b.dx) : a.dy.compareTo(b.dy));
+  if (p.length < 3) return p;
+  double cross(Offset o, Offset a, Offset b) =>
+      (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
+  final lo = <Offset>[];
+  for (final q in p) {
+    while (lo.length >= 2 && cross(lo[lo.length - 2], lo.last, q) <= 0) {
+      lo.removeLast();
+    }
+    lo.add(q);
+  }
+  final up = <Offset>[];
+  for (final q in p.reversed) {
+    while (up.length >= 2 && cross(up[up.length - 2], up.last, q) <= 0) {
+      up.removeLast();
+    }
+    up.add(q);
+  }
+  lo.removeLast();
+  up.removeLast();
+  return [...lo, ...up];
+}
+
+Rect _boundsOf(List<Offset> pts) {
+  var l = double.infinity, t = double.infinity;
+  var r = -double.infinity, b = -double.infinity;
+  for (final o in pts) {
+    l = math.min(l, o.dx);
+    t = math.min(t, o.dy);
+    r = math.max(r, o.dx);
+    b = math.max(b, o.dy);
+  }
+  return Rect.fromLTRB(l, t, r, b);
+}
+
+int _signOf(List<Offset> poly) {
+  var s = 0.0;
+  for (var k = 0; k < poly.length; k++) {
+    final a = poly[k], b = poly[(k + 1) % poly.length];
+    s += a.dx * b.dy - b.dx * a.dy;
+  }
+  return s >= 0 ? 1 : -1;
+}
+
+/// Do two convex polygons overlap (more than just touching)?
+bool _hullsOverlap(List<Offset> p, List<Offset> q) {
+  for (final poly in [p, q]) {
+    final n = poly.length;
+    if (n < 3) return false;
+    for (var i = 0; i < n; i++) {
+      final a = poly[i], b = poly[(i + 1) % n];
+      final ex = b.dx - a.dx, ey = b.dy - a.dy;
+      final len = math.sqrt(ex * ex + ey * ey);
+      if (len < 1e-9) continue;
+      final nx = ey / len, ny = -ex / len;
+      var pMin = double.infinity, pMax = -double.infinity;
+      var qMin = double.infinity, qMax = -double.infinity;
+      for (final o in p) {
+        final d = o.dx * nx + o.dy * ny;
+        pMin = math.min(pMin, d);
+        pMax = math.max(pMax, d);
+      }
+      for (final o in q) {
+        final d = o.dx * nx + o.dy * ny;
+        qMin = math.min(qMin, d);
+        qMax = math.max(qMax, d);
+      }
+      if (pMax <= qMin + 0.05 || qMax <= pMin + 0.05) return false;
+    }
+  }
+  return true;
+}
+
+/// Which of two slabs is nearer the viewer. `(vx, vy)` points from the scene
+/// towards the viewer, in map space. Returns 1 if [b] must be painted after
+/// [a] (b is in front), -1 if before, 0 if the footprints don't separate.
+///
+/// Two disjoint convex footprints are always split by one of their edges; the
+/// slab on the viewer's side of that line is the nearer one. A centroid sort
+/// gets this wrong for long thin shapes (wall strips beside cases).
+int _slabFront(_Slab a, _Slab b, double vx, double vy) {
+  double? sep(_Slab p, _Slab q) {
+    final h = p.hull, n = h.length;
+    if (n < 3) return null;
+    final sg = p.hullSign;
+    for (var i = 0; i < n; i++) {
+      final a0 = h[i], a1 = h[(i + 1) % n];
+      final ex = a1.dx - a0.dx, ey = a1.dy - a0.dy;
+      final len = math.sqrt(ex * ex + ey * ey);
+      if (len < 1e-9) continue;
+      final nx = sg * ey / len, ny = -sg * ex / len;
+      var outside = true;
+      for (final o in q.hull) {
+        if ((o.dx - a0.dx) * nx + (o.dy - a0.dy) * ny < -0.05) {
+          outside = false;
+          break;
+        }
+      }
+      if (outside) return nx * vx + ny * vy;
+    }
+    return null;
+  }
+
+  final d = sep(a, b); // b lies along n from a: b is nearer iff n.v > 0
+  if (d != null && d.abs() > 1e-4) return d > 0 ? 1 : -1;
+  final e = sep(b, a); // a lies along n from b: a is nearer iff n.v > 0
+  if (e != null && e.abs() > 1e-4) return e > 0 ? -1 : 1;
+  return 0;
 }
 
 /// A statue that stands upright on its plinth (data: kFigures in gem_blocks.dart).
@@ -374,6 +492,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   List<_Prism> _prisms = const [];
   List<_Prism> _solids = const [];
   List<_Slab> _slabs = const [];
+  List<_Slab> _slabOrder = const [];
+  List<_Slab>? _slabOrderOf;
+  int _slabOrderKey = 1 << 30;
   List<_Figure> _figures = const [];
 
   /// Garden and parking regions: flat ground that has no walls and is not in
@@ -516,6 +637,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         floor.addPolygon(pts, true);
       }
       final f = _heightOverride[r.id] ?? _heightFactor(r.kind);
+      // A flat open-air attraction (the Events Area) has no walls to draw, but
+      // it still needs a floor, or the garden underneath shows through it.
+      if (f <= 0 && r.kind == RegionKind.attraction) ground.add((path, r.kind));
       if (f <= 0) continue;
       var s = 0.0, cx = 0.0, cy = 0.0;
       for (var k = 0; k < pts.length; k++) {
@@ -617,6 +741,81 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
           ),
         ) *
         1.8;
+  }
+
+  /// The slabs far-to-near for the current yaw (cached: pan and zoom never
+  /// change the order, only turning the map does). Built from a topological
+  /// sort of the pairwise "who is in front" relation, see [_slabFront].
+  List<_Slab> _orderedSlabs(double yaw) {
+    final key = (yaw * 360 / math.pi).round(); // half-degree steps
+    if (key == _slabOrderKey && identical(_slabOrderOf, _slabs)) {
+      return _slabOrder;
+    }
+    _slabOrderKey = key;
+    _slabOrderOf = _slabs;
+    final vx = math.sin(yaw), vy = math.cos(yaw);
+    final n = _slabs.length;
+    final depth = [
+      for (final sl in _slabs) sl.centroid.dx * vx + sl.centroid.dy * vy,
+    ];
+    var tallest = 0.0;
+    for (final sl in _slabs) {
+      tallest = math.max(tallest, sl.height);
+    }
+    // a tall slab hides things up to ~1.3x its height behind it (tilt <= 53 deg)
+    final reach = tallest * 2.5 + 1;
+    // Each slab as it appears on screen: its footprint plus the footprint
+    // lifted by its height (tan of the max tilt ~ 1.35). Only pairs whose
+    // pictures overlap constrain each other; ordering the rest only invents
+    // contradictions (cycles).
+    final cs = math.cos(yaw), sn = math.sin(yaw);
+    final swept = <List<Offset>>[
+      for (final sl in _slabs)
+        _hullOf([
+          for (final p in sl.hull) Offset(p.dx * cs - p.dy * sn, p.dx * sn + p.dy * cs),
+          for (final p in sl.hull)
+            Offset(p.dx * cs - p.dy * sn, p.dx * sn + p.dy * cs - sl.height * 1.35),
+        ]),
+    ];
+    final after = List<List<int>>.generate(n, (_) => <int>[]);
+    final waiting = List<int>.filled(n, 0);
+    for (var i = 0; i < n; i++) {
+      final bi = _slabs[i].bounds.inflate(reach);
+      for (var j = i + 1; j < n; j++) {
+        if (!bi.overlaps(_slabs[j].bounds)) continue;
+        if (!_hullsOverlap(swept[i], swept[j])) continue;
+        final r = _slabFront(_slabs[i], _slabs[j], vx, vy);
+        if (r > 0) {
+          after[i].add(j);
+          waiting[j]++;
+        } else if (r < 0) {
+          after[j].add(i);
+          waiting[i]++;
+        }
+      }
+    }
+    final done = List<bool>.filled(n, false);
+    final order = <_Slab>[];
+    for (var k = 0; k < n; k++) {
+      var best = -1;
+      for (var i = 0; i < n; i++) {
+        if (done[i] || waiting[i] > 0) continue;
+        if (best < 0 || depth[i] < depth[best]) best = i;
+      }
+      if (best < 0) {
+        // a cycle (interlocking shapes): take the farthest one left
+        for (var i = 0; i < n; i++) {
+          if (done[i]) continue;
+          if (best < 0 || depth[i] < depth[best]) best = i;
+        }
+      }
+      done[best] = true;
+      order.add(_slabs[best]);
+      for (final t in after[best]) {
+        waiting[t]--;
+      }
+    }
+    return _slabOrder = order;
   }
 
   /// How far region [id] is risen: 1 = selected, 0 = resting.
@@ -943,11 +1142,33 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     );
   }
 
-  IsoCamera _cam() => IsoCamera(
-    center: _viewCenter,
-    tilt: _tiltCurve.value * kMaxTilt,
-    viewport: _vp,
-  );
+  IsoCamera _cam() {
+    final tilt = _tiltCurve.value * kMaxTilt;
+    final c = _viewCenter;
+    final m = widget.transform.value.storage;
+    final px = _px;
+    // How far the plan (and its tallest wall) reaches from the tilt axis, in
+    // screen px. Zoomed in, that outgrows the camera distance and the far part
+    // of the plan ends up BEHIND the camera: the geometry flips and glitches.
+    // IsoCamera pushes the camera back just far enough to prevent that.
+    var far = 0.0;
+    for (final o in [
+      Offset.zero,
+      Offset(px.width, 0),
+      Offset(0, px.height),
+      Offset(px.width, px.height),
+    ]) {
+      final y = m[1] * o.dx + m[5] * o.dy + m[13];
+      far = math.max(far, (y - c.dy).abs());
+    }
+    final zoom = _scaleOf(widget.transform.value);
+    return IsoCamera(
+      center: c,
+      tilt: tilt,
+      viewport: _vp,
+      reach: far * math.sin(tilt) + _maxHeight * zoom * math.cos(tilt),
+    );
+  }
   Matrix4 _full() => _cam().compose(widget.transform.value);
 
   double _fitScale(Size vp, int quarter) {
@@ -1503,20 +1724,12 @@ class _IsoPainter extends CustomPainter {
     List<_Prism>? inside,
   }) {
     if (s._slabs.isEmpty) return;
-    final order =
-        [
-          for (final sl in s._slabs)
-            if (inside == null ||
-                inside.any((pr) => pr.region.contains(sl.normCentroid)))
-              sl,
-        ]..sort(
-          (a, b) => project(
-            full,
-            a.centroid.dx,
-            a.centroid.dy,
-            0,
-          ).dy.compareTo(project(full, b.centroid.dx, b.centroid.dy, 0).dy),
-        );
+    final order = [
+      for (final sl in s._orderedSlabs(yaw))
+        if (inside == null ||
+            inside.any((pr) => pr.region.contains(sl.normCentroid)))
+          sl,
+    ];
     final cs = math.cos(yaw), sn = math.sin(yaw);
     for (final sl in order) {
       final n = sl.pts.length;
@@ -1578,17 +1791,24 @@ class _IsoPainter extends CustomPainter {
   /// Gardens (sage green) and parking (slate) lie flat on the ground. They are
   /// drawn under the artwork, so the plan's own fills and outlines stay on top.
   void _groundFills(Canvas canvas) {
-    for (final (path, kind) in s._ground) {
-      final fill = kind == RegionKind.garden ? pal.garden : pal.parking;
-      canvas.drawPath(path, Paint()..color = fill);
-      canvas.drawPath(
-        path,
-        Paint()
-          ..color = pal.rim.withValues(alpha: pal.dark ? 0.16 : 0.45)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.2
-          ..strokeJoin = StrokeJoin.round,
-      );
+    // gardens and parking first, then flat plazas (Events Area) on top of them
+    for (final plazas in const [false, true]) {
+      for (final (path, kind) in s._ground) {
+        final plaza = kind == RegionKind.attraction;
+        if (plaza != plazas) continue;
+        final fill = plaza
+            ? Color.lerp(_floorColor, GemColors.gold, 0.22)!
+            : (kind == RegionKind.garden ? pal.garden : pal.parking);
+        canvas.drawPath(path, Paint()..color = fill);
+        canvas.drawPath(
+          path,
+          Paint()
+            ..color = pal.rim.withValues(alpha: pal.dark ? 0.16 : 0.45)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.2
+            ..strokeJoin = StrokeJoin.round,
+        );
+      }
     }
   }
 

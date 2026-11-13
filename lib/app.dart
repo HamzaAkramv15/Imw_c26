@@ -26,6 +26,9 @@ class GemNavigatorApp extends StatelessWidget {
         locale: app.lang.locale,
         supportedLocales: [for (final l in AppLang.values) l.locale],
         localizationsDelegates: GlobalMaterialLocalizations.delegates,
+        // The controls float over the plan: text grows with the system setting,
+        // up to the point where it would start to bury the map.
+        builder: (context, child) => MediaQuery.withClampedTextScaling(maxScaleFactor: 1.3, child: child!),
         home: const MuseumMapScreen(),
       ),
     );

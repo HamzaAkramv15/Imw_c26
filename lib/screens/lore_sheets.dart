@@ -63,10 +63,10 @@ class _AboutSheet extends StatelessWidget {
           children: [
             GemEyebrow(S.t('about_museum')),
             const SizedBox(height: 6),
-            Text(kEpilogue['title']![l], style: TextStyle(fontSize: 24, height: 1.2, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.gold)),
+            Text(kEpilogue['title']![l], style: TextStyle(fontSize: 22, height: 1.2, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.gold)),
             for (final para in kEpilogue['body']![l].split('\n\n')) ...[
               const SizedBox(height: 12),
-              Text(para, style: TextStyle(fontFamily: 'Arial', fontSize: 15, height: 1.6, color: p.ink)),
+              Text(para, style: TextStyle(fontFamily: 'Arial', fontSize: 16, height: 1.6, color: p.ink)),
             ],
             const SizedBox(height: 18),
             Container(

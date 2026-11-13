@@ -48,7 +48,7 @@ class EraBar extends StatelessWidget {
                             '${S.era(active)} · ${S.chip(active.range)}',
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontFamily: 'Arial', fontSize: 12.5, fontWeight: FontWeight.w700, color: p.dark ? p.ink : Colors.white),
+                            style: TextStyle(fontFamily: 'Arial', fontSize: 12, fontWeight: FontWeight.w700, color: p.dark ? p.ink : Colors.white),
                           ),
                         ),
                       ],
@@ -73,27 +73,32 @@ class EraBar extends StatelessWidget {
 
   Widget _chip(BuildContext context, GemPalette p, Era e, bool on) {
     final color = p.pin(e.color);
-    return Container(
-      decoration: BoxDecoration(
-        color: on ? color : p.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: on ? color : p.line.withValues(alpha: .8)),
-        boxShadow: gemShadow(p, lift: .6),
-      ),
-      child: Material(
-        type: MaterialType.transparency,
-        child: InkWell(
-          onTap: () => onSelect(on ? null : e.id),
-          borderRadius: BorderRadius.circular(18),
-          child: SizedBox(
-            height: 38,
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(width: 9, height: 9, decoration: BoxDecoration(color: on ? Colors.white : color, shape: BoxShape.circle)),
-                const SizedBox(width: 6),
-                Text(e.galleries, style: TextStyle(fontFamily: 'Arial', fontSize: 12.5, fontWeight: FontWeight.w800, color: on ? Colors.white : p.ink)),
-              ],
+    return Semantics(
+      button: true,
+      selected: on,
+      label: S.era(e),
+      child: Container(
+        decoration: BoxDecoration(
+          color: on ? color : p.surface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: on ? color : p.line.withValues(alpha: .8)),
+          boxShadow: gemShadow(p, lift: .6),
+        ),
+        child: Material(
+          type: MaterialType.transparency,
+          child: InkWell(
+            onTap: () => onSelect(on ? null : e.id),
+            borderRadius: BorderRadius.circular(20),
+            child: SizedBox(
+              height: gemChipHeight(context),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(width: 9, height: 9, decoration: BoxDecoration(color: on ? Colors.white : color, shape: BoxShape.circle)),
+                  const SizedBox(width: 6),
+                  Text(e.galleries, style: TextStyle(fontFamily: 'Arial', fontSize: 14, fontWeight: FontWeight.w800, color: on ? Colors.white : p.ink)),
+                ],
+              ),
             ),
           ),
         ),

@@ -310,16 +310,15 @@ class NavEdge {
   final bool stairs;
 }
 
-/// A doorway: a gap in a wall that routes pass through. [a]–[b] spans the
-/// opening (normalised). `verified: false` marks an opening the plan does not
-/// draw, placed where the plan's aisles meet the wall.
-@immutable
 /// What an opening in a wall is, as far as the plan shows.
 ///   door: a doorway in a wall;  passage: a stretch the plan leaves without a wall.
 enum DoorKind { door, passage }
 
-/// An opening: the walls (drawn and in the routing grid) are open within
-/// half of |a - b| of its centre.
+/// A doorway: a gap in a wall that routes pass through. [a]–[b] spans the
+/// opening (normalised). `verified: false` marks an opening the plan does not
+/// draw, placed where the plan's aisles meet the wall. The walls (drawn and in
+/// the routing grid) are open within half of |a - b| of its centre.
+@immutable
 class MapDoor {
   const MapDoor(this.id, this.mapId, this.a, this.b, {this.kind = DoorKind.door, this.verified = true});
   final String id;

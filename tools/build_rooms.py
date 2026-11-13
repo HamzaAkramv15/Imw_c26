@@ -8,7 +8,13 @@ number (pin) it reaches first walking around the walls, and walking through a
 narrow place costs extra; so the outlines follow the walls wherever the plan has
 them and cross the floor at the openings between galleries, never through a wall.
 Areas nearer the entrance landing or the Tutankhamun doorway than to any gallery
-stay circulation (no outline).  Then run tools/build_nav.py."""
+stay circulation (no outline).
+
+What the walk cannot reach is then given to the nearest room: the floor under
+the walls (so two neighbouring outlines meet on the wall's centre line, with no
+unlit strip beside it) and pockets the walls close off from every pin (the
+wedge between galleries 09 and 09b, the bay at the foot of 07).  Then run
+tools/build_nav.py."""
 import os
 import sys
 
@@ -54,6 +60,9 @@ def rooms():
     dist = np.stack([sg.MCP_Geometric(cost).find_costs([p])[0] for p in pts])
     best = dist.argmin(axis=0)
     lab = np.where(free & np.isfinite(dist.min(axis=0)), best, -1)
+    # walls and closed-off pockets of the floor: to the nearest labelled cell
+    _, (iy, ix) = ndimage.distance_transform_edt(lab < 0, return_indices=True)
+    lab = np.where(floor, lab[iy, ix], -1)
     out = []
     for i, (pid, x, y) in enumerate(seeds):
         if not pid.startswith('mg_') or pid in ('mg_entrance', 'mg_tut'):

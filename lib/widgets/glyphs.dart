@@ -18,6 +18,16 @@ const Map<String, List<(bool, String)>> kGlyphs = {
   'lotus': <(bool, String)>[(false, 'M50 90 C26 80 18 50 32 20 C44 36 48 62 50 90 Z'),(false, 'M50 90 C74 80 82 50 68 20 C56 36 52 62 50 90 Z'),(false, 'M50 90 C36 62 36 30 50 8 C64 30 64 62 50 90 Z'),(false, 'M28 94 L72 94')],
   'feather': <(bool, String)>[(false, 'M50 6 C70 24 70 60 50 80'),(false, 'M50 6 C30 24 30 60 50 80'),(false, 'M50 6 L50 96'),(false, 'M50 30 L66 22 M50 44 L67 36 M50 58 L64 52 M50 30 L34 22 M50 44 L33 36 M50 58 L36 52')],
   'bread': <(bool, String)>[(false, 'M14 74 C14 40 86 40 86 74 Z'),(false, 'M34 74 L34 54 M66 74 L66 54')],
+  // N31 wꜣt "road bordered by shrubs": the sign for a road or way (Rostau trips)
+  'wat': <(bool, String)>[(false, 'M6 40 L94 40'),(false, 'M6 60 L94 60'),(true, 'O 20 28 5.5'),(true, 'O 50 28 5.5'),(true, 'O 80 28 5.5'),(true, 'O 35 72 5.5'),(true, 'O 65 72 5.5')],
+  // O1 pr "house": a walled enclosure seen from above, with its doorway (per-aa)
+  'per': <(bool, String)>[(false, 'M14 30 L86 30 L86 74 L58 74'),(false, 'M42 74 L14 74 L14 30')],
+  // S12 nbw "gold": a broad bead collar (nebu)
+  'nbw': <(bool, String)>[(false, 'M10 30 L90 30'),(false, 'M10 30 C14 62 86 62 90 30'),(false, 'M26 50 L26 70 M42 56 L42 78 M58 56 L58 78 M74 50 L74 70')],
+  // N15 dwꜣt: a star in a circle, the netherworld (Duat)
+  'duat': <(bool, String)>[(false, 'O 50 50 42'),(false, 'M50 20 L67.6 74.3 L21.5 40.7 L78.5 40.7 L32.4 74.3 Z')],
+  // M17 a reed leaf: the Field of Reeds (Sekhet-Aaru)
+  'reed': <(bool, String)>[(false, 'M50 94 C40 64 40 30 56 6 C62 30 60 62 50 94 Z'),(false, 'M50 94 L50 40'),(false, 'M30 94 L70 94')],
 };
 
 /// What each sign meant to the ancient Egyptians (used by the carvings sheet).

@@ -30,4 +30,20 @@ void main() {
     // let the debounced save and the language switch settle
     await tester.pump(const Duration(seconds: 1));
   });
+
+  testWidgets('with Reduce Motion on, a shown route stands still (no endless frames)', (tester) async {
+    tester.platformDispatcher.accessibilityFeaturesTestValue = const FakeAccessibilityFeatures(disableAnimations: true);
+    addTearDown(tester.platformDispatcher.clearAccessibilityFeaturesTestValue);
+    // a visitor who set their location and asked for a route, last time
+    Store.put({'map': 'gem_complex', 'origin': 'cx_ticket', 'routeTarget': 'tg_mask', 'tour': null});
+    await tester.pumpWidget(const GemNavigatorApp());
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byTooltip('Next step'), findsOneWidget); // the route card is up, with its instruction
+    expect(tester.binding.hasScheduledFrame, isFalse);
+    Store.put({'origin': null, 'routeTarget': null});
+    await tester.pumpWidget(const SizedBox());
+    await tester.pump(const Duration(seconds: 1));
+  });
 }

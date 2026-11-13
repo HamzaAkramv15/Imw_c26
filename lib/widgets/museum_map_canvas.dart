@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
@@ -9,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_svg/flutter_svg.dart';
+import 'package:imo/models/rostau.dart';
 
 import '../data/gem_blocks.dart';
 import '../data/gem_extras.dart';
@@ -79,11 +79,23 @@ const Map<String, String> _strokeSwap = {
   '#b9bdc1': '#8a7f66',
 };
 
-String _recolor(String svg) {
+/// Per-plan exceptions to [_fillSwap]. On the site plan the grey is the roads,
+/// drawn as asphalt so they read as streets, not as more paving; and the tan
+/// is landscaping, drawn green as on the official GEM map's legend (the
+/// pyramid symbol, tagged #a88445 in the asset, keeps its gold).
+const Map<String, Map<String, String>> _fillSwapByMap = {
+  'gem_complex': {'#454b53': '#9d988e', '#a88444': '#7c9a70', '#a88445': '#c9a45c'},
+};
+
+String _recolor(String svg, String mapId) {
+  final own = _fillSwapByMap[mapId] ?? const <String, String>{};
   var s = svg.replaceAll(RegExp(r'<metadata>.*?</metadata>', dotAll: true), '');
   s = s.replaceAllMapped(
     RegExp(r'fill="(#[0-9a-fA-F]{6})"'),
-    (m) => 'fill="${_fillSwap[m[1]!.toLowerCase()] ?? m[1]}"',
+    (m) {
+      final c = m[1]!.toLowerCase();
+      return 'fill="${own[c] ?? _fillSwap[c] ?? m[1]}"';
+    },
   );
   s = s.replaceAllMapped(
     RegExp(r'stroke="(#[0-9a-fA-F]{6})"'),
@@ -157,8 +169,21 @@ class _Slab {
     required this.centroid,
     required this.sign,
     required this.outer,
+    this.convex = true,
+    this.figure,
+    this.prism,
   });
+
+  /// A block kind from gem_blocks.dart, 'step', or one of the things that join
+  /// the blocks in one depth order (see [_orderedSlabs]):
+  ///   'figure' - a statue, palm or other monument, by its footprint;
+  ///   'pwall'  - a stretch of a room's wall between its openings: pts[0] to
+  ///              pts[1] is the wall, the quad gives it a hair of thickness;
+  ///   'psolid' - a convex piece of a roofed block (a building on the site plan).
   final String kind;
+  final bool convex;
+  final _Figure? figure;
+  final _Prism? prism;
 
   /// Per edge i (pts[i] -> pts[i+1]): true if it is a real side of the solid,
   /// false if it is only a seam where two pieces of one concave solid meet (or
@@ -191,8 +216,9 @@ class _Slab {
 }
 
 List<Offset> _hullOf(List<Offset> pts) {
-  final p = [...pts]
-    ..sort((a, b) => a.dx != b.dx ? a.dx.compareTo(b.dx) : a.dy.compareTo(b.dy));
+  final p = [
+    ...pts,
+  ]..sort((a, b) => a.dx != b.dx ? a.dx.compareTo(b.dx) : a.dy.compareTo(b.dy));
   if (p.length < 3) return p;
   double cross(Offset o, Offset a, Offset b) =>
       (a.dx - o.dx) * (b.dy - o.dy) - (a.dy - o.dy) * (b.dx - o.dx);
@@ -264,7 +290,6 @@ bool _hullsOverlap(List<Offset> p, List<Offset> q) {
   }
   return true;
 }
-
 
 // ── convex pieces ──────────────────────────────────────────────
 // The draw order of the solids (see _slabFront) is only exact for convex
@@ -343,8 +368,7 @@ List<List<int>>? _earClip(List<Offset> pts) {
     }
     if (!dropped) return null;
   }
-  if (idx.length == 3 &&
-      _cross(pts[idx[0]], pts[idx[1]], pts[idx[2]]) > 1e-9) {
+  if (idx.length == 3 && _cross(pts[idx[0]], pts[idx[1]], pts[idx[2]]) > 1e-9) {
     tris.add([idx[0], idx[1], idx[2]]);
   }
   return tris;
@@ -388,7 +412,9 @@ List<({List<Offset> pts, List<bool> outer, bool convex})> _convexPieces(
   }
   final pa = _area2(p);
   if ((ta - pa).abs() > 1e-3 * pa.abs() + 1e-6) {
-    return [(pts: p, outer: all(p.length), convex: false)]; // not a simple outline
+    return [
+      (pts: p, outer: all(p.length), convex: false),
+    ]; // not a simple outline
   }
   final pieces = [for (final t in tris) List<int>.of(t)];
   var merged = true;
@@ -590,12 +616,16 @@ int _slabFront(_Slab a, _Slab b, double vx, double vy) {
 /// A thin wall quad with the openings in it cut out: the wall is split along its
 /// long axis wherever an opening's circle crosses that axis (the routes go
 /// through there; tools/test_nav.py checks the same geometry).
-List<List<Offset>> _cutDoorways(List<Offset> quad, List<(Offset, Offset)> doors) {
+List<List<Offset>> _cutDoorways(
+  List<Offset> quad,
+  List<(Offset, Offset)> doors,
+) {
   if (quad.length != 4) return [quad];
   // long axis: from the middle of one short side to the middle of the other
   final e0 = (quad[1] - quad[0]).distance, e1 = (quad[2] - quad[1]).distance;
   final s0 = e0 < e1 ? 0 : 1; // first short side starts at quad[s0]
-  final a = (quad[s0] + quad[s0 + 1]) / 2, b = (quad[(s0 + 2) % 4] + quad[(s0 + 3) % 4]) / 2;
+  final a = (quad[s0] + quad[s0 + 1]) / 2,
+      b = (quad[(s0 + 2) % 4] + quad[(s0 + 3) % 4]) / 2;
   final len = (b - a).distance;
   if (len < 1e-6) return [quad];
   final dir = (b - a) / len;
@@ -634,7 +664,11 @@ List<List<Offset>> _cutDoorways(List<Offset> quad, List<(Offset, Offset)> doors)
 
 /// Stall lines of a car park: across its longest side, every [gap] map units,
 /// clipped to the outline and kept off its edges.
-List<(Offset, Offset)> _stallLines(List<Offset> poly, {double gap = 7, double inset = 3}) {
+List<(Offset, Offset)> _stallLines(
+  List<Offset> poly, {
+  double gap = 7,
+  double inset = 3,
+}) {
   if (poly.length < 3) return const [];
   var a = poly[0], b = poly[1];
   for (var i = 0; i < poly.length; i++) {
@@ -670,7 +704,10 @@ List<(Offset, Offset)> _stallLines(List<Offset> poly, {double gap = 7, double in
     for (var i = 0; i + 1 < hits.length; i += 2) {
       if (hits[i + 1] - hits[i] < inset * 3) continue;
       final base = a + dir * t;
-      out.add((base + nrm * (hits[i] + inset), base + nrm * (hits[i + 1] - inset)));
+      out.add((
+        base + nrm * (hits[i] + inset),
+        base + nrm * (hits[i + 1] - inset),
+      ));
     }
   }
   return out;
@@ -691,10 +728,27 @@ class _Figure {
     required this.normals,
     required this.lit,
     required this.litDark,
+    required this.foot,
+    this.layer,
     this.outline,
     this.color = 0,
+    this.lo,
   });
   final String id;
+
+  /// Footprint on the floor (map px): where it stands in the depth order.
+  final List<Offset> foot;
+
+  /// Draw layer per triangle (FigureMesh.layers), or null for one layer.
+  final Int32List? layer;
+
+  /// The same figure with fewer triangles, used while it is small on screen.
+  final _Figure? lo;
+
+  /// Triangles turned towards the viewer, far to near, for the yaw in
+  /// [orderKey] (half-degree steps): only turning the map changes it.
+  int orderKey = 1 << 30;
+  List<int> order = const [];
   final Offset norm; // anchor, 0..1 (to find the room it stands in)
   final Offset anchor; // map px
   final double height; // map px
@@ -737,7 +791,8 @@ const Map<String, double> _heightOverride = {
   'mb_zone_stairs': 0.034,
   'cx_events': 0,
   'cx_pyramids_steps': 0.012,
-  'cx_obelisk': 0, // an open plaza: no walls (also left open in the routing grid)
+  'cx_obelisk':
+      0, // an open plaza: no walls (also left open in the routing grid)
 };
 
 extension on Color {
@@ -755,6 +810,22 @@ Color _shade(Color c, double k) => Color.from(
 // ═══════════════════════════════════════════════════════════════
 //  Widget
 // ═══════════════════════════════════════════════════════════════
+
+/// Regions lifted out of the veil and outlined: every region [highlighted]
+/// (the galleries of the era picked on the timeline), and the [selected] one
+/// unless it is a gallery, whose traced outline is only approximate, so its
+/// pin alone marks it.
+Set<String> focusRegions(
+  List<MapRegion> regions,
+  Set<String> highlighted,
+  String? selected,
+) => {
+  ...highlighted,
+  if (selected != null &&
+      regions.where((r) => r.id == selected).firstOrNull?.kind !=
+          RegionKind.gallery)
+    selected,
+};
 
 class MuseumMapCanvas extends StatefulWidget {
   const MuseumMapCanvas({
@@ -790,6 +861,12 @@ class MuseumMapCanvas extends StatefulWidget {
     this.onFocusDone,
     this.padding = EdgeInsets.zero,
     this.keepClear = const <Rect>[],
+    this.walkedLegs = const <RouteLeg>[],
+    this.laterLegs = const <RouteLeg>[],
+    this.trip,
+    this.stopNodes = const <String, String>{},
+    this.stepFocus,
+    this.focusRect,
   });
 
   final GemMap map;
@@ -800,8 +877,23 @@ class MuseumMapCanvas extends StatefulWidget {
   final String? selectedRegionId;
   final Set<String> pinned;
 
-  /// Route pieces that lie on this map.
+  /// Route pieces that lie on this map: the stretch to walk now (drawn bold,
+  /// with arrows showing the way).
   final List<RouteLeg> legs;
+
+  /// The part of a walk already behind the visitor (drawn faint) and the part
+  /// after the stop they are heading for (drawn as a light dotted line).
+  final List<RouteLeg> walkedLegs;
+  final List<RouteLeg> laterLegs;
+
+  /// The walk being followed, and each stop's routing node by place id: the
+  /// stops' pins carry their number and state.
+  final TripProgress? trip;
+  final Map<String, String> stopNodes;
+
+  /// The instruction the visitor is reading: marked on the map where it
+  /// happens.
+  final RouteStep? stepFocus;
 
   /// 0..1 draw-in of the route.
   final Animation<double> routeProgress;
@@ -827,8 +919,10 @@ class MuseumMapCanvas extends StatefulWidget {
   /// 0 = as drawn, 1 = turned 90°.
   final int quarterTurns;
 
-  /// Bump [focusTick] to zoom to [focusPoint] (normalised).
+  /// Bump [focusTick] to glide to [focusPoint] (normalised), or to fit
+  /// [focusRect] (normalised) when that is set.
   final Offset? focusPoint;
+  final Rect? focusRect;
   final int focusTick;
 
   /// Bump [zoomTick] to zoom about the centre by [zoomFactor].
@@ -856,6 +950,11 @@ class MuseumMapCanvas extends StatefulWidget {
   /// controls sit on. Names slide out from under them and pins that are mostly
   /// hidden behind them are left out until the map is panned clear again.
   final List<Rect> keepClear;
+
+  /// Plan artwork handed in ready-made, by map id (tests only: the SVG cannot
+  /// be rasterised under the test binding's fake clock).
+  @visibleForTesting
+  static final Map<String, ui.Image> debugArt = {};
 
   @override
   State<MuseumMapCanvas> createState() => _MuseumMapCanvasState();
@@ -907,6 +1006,12 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   List<_Prism> _solids = const [];
   List<_Slab> _slabs = const [];
   List<_Slab> _slabOrder = const [];
+
+  /// Pairs of slabs (i, j, flattened) close enough that one may hide the other
+  /// from some direction. It does not depend on the yaw, so it is found once per
+  /// scene; turning the map only re-decides these pairs.
+  Int32List _slabPairs = Int32List(0);
+  List<_Slab>? _slabPairsOf;
   List<_Slab>? _slabOrderOf;
   int _slabOrderKey = 1 << 30;
   List<_Figure> _figures = const [];
@@ -925,6 +1030,17 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   List<(String, Path)> _extraFloors = const [];
   double _maxHeight = 0;
   List<Float64List> _routeGeo = const [];
+  List<Float64List> _walkedGeo = const [];
+  List<Float64List> _laterGeo = const [];
+
+  /// Camera glides (focus on a place, a step of the route): flat point and
+  /// zoom at the start and end, eased by [_glide].
+  late final AnimationController _glide = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 560),
+  )..addListener(_onGlide);
+  Offset _glideFrom = Offset.zero, _glideTo = Offset.zero;
+  double _glideZ0 = 1, _glideZ1 = 1;
 
   List<({MapPlace place, int prio})> _sorted = const [];
 
@@ -975,7 +1091,12 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     }
     _loadSvg();
     _rebuildLabels();
+    _reduceMotion = MediaQuery.disableAnimationsOf(context);
+    _syncLoop();
   }
+
+  /// The visitor asked for less motion: the route and the beacon stand still.
+  bool _reduceMotion = false;
 
   @override
   void didUpdateWidget(MuseumMapCanvas old) {
@@ -995,7 +1116,11 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       _liftTo = widget.selectedRegionId;
       _liftCtl.forward(from: 0);
     }
-    if (!_sameLegs(old.legs, widget.legs)) _buildRoute();
+    if (!_sameLegs(old.legs, widget.legs) ||
+        !_sameLegs(old.walkedLegs, widget.walkedLegs) ||
+        !_sameLegs(old.laterLegs, widget.laterLegs)) {
+      _buildRoute();
+    }
     _sortPins();
     _rebuildLabels();
     _syncLoop();
@@ -1008,6 +1133,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     _liftCurve.dispose();
     _tilt.dispose();
     _loop.dispose();
+    _glide.dispose();
     _liftCtl.dispose();
     _image?.dispose();
     super.dispose();
@@ -1021,11 +1147,13 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     return true;
   }
 
-  /// The route flow / beacon pulse only run while something is showing them.
+  /// The beacon's slow pulse runs only while the visitor's position is on this
+  /// map (the route itself stands still: its arrows show the way).
   void _syncLoop() {
     final need =
-        widget.legs.isNotEmpty ||
-        (widget.originPos != null && widget.originMapId == widget.map.id);
+        !_reduceMotion &&
+        widget.originPos != null &&
+        widget.originMapId == widget.map.id;
     if (need && !_loop.isAnimating) {
       _loop.repeat();
     } else if (!need && _loop.isAnimating) {
@@ -1045,7 +1173,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final doors = [
       for (final d in kDoors)
         if (d.mapId == widget.map.id)
-          (Offset(d.a.dx * px.width, d.a.dy * px.height), Offset(d.b.dx * px.width, d.b.dy * px.height)),
+          (
+            Offset(d.a.dx * px.width, d.a.dy * px.height),
+            Offset(d.b.dx * px.width, d.b.dy * px.height),
+          ),
     ];
     for (final r in widget.regions) {
       final pts = [
@@ -1074,7 +1205,8 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         cx += a.dx;
         cy += a.dy;
       }
-      final solid = r.kind == RegionKind.building || r.kind == RegionKind.attraction;
+      final solid =
+          r.kind == RegionKind.building || r.kind == RegionKind.attraction;
       final pr = _Prism(
         region: r,
         pts: pts,
@@ -1094,7 +1226,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     _ground = ground;
     _bays = [
       for (final r in widget.regions)
-        if (r.kind == RegionKind.parking) ..._stallLines([for (final o in r.points) Offset(o.dx * px.width, o.dy * px.height)]),
+        if (r.kind == RegionKind.parking)
+          ..._stallLines([
+            for (final o in r.points) Offset(o.dx * px.width, o.dy * px.height),
+          ]),
     ];
     final raw = <_SlabPiece>[];
     void addSlab(String kind, double h, List<double> v) {
@@ -1103,7 +1238,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         for (var i = 0; i + 1 < v.length; i += 2)
           Offset(v[i] * px.width, v[i + 1] * px.height),
       ];
-      final parts = (kind == 'wall' || kind == 'rwall') && doors.isNotEmpty ? _cutDoorways(poly, doors) : [poly];
+      final parts = (kind == 'wall' || kind == 'rwall') && doors.isNotEmpty
+          ? _cutDoorways(poly, doors)
+          : [poly];
       for (final part in parts) {
         for (final pc in _convexPieces(part)) {
           raw.add(_SlabPiece(kind, h * u, pc.pts, pc.outer, pc.convex));
@@ -1134,7 +1271,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       slabs.add(
         _Slab(
           kind: pc.kind,
-          norm: [for (final o in pts) Offset(o.dx / px.width, o.dy / px.height)],
+          norm: [
+            for (final o in pts) Offset(o.dx / px.width, o.dy / px.height),
+          ],
           pts: pts,
           height: pc.height,
           centroid: Offset(cx / pts.length, cy / pts.length),
@@ -1154,10 +1293,62 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       extra.add((f.kind, Path()..addPolygon(fp, true)));
     }
     _extraFloors = extra;
-    _slabs = slabs;
     _figures = [
-      for (final f in kFigures[widget.map.id] ?? const <MapFigure>[]) _placeFigure(f, px, u),
+      for (final f in kFigures[widget.map.id] ?? const <MapFigure>[])
+        _placeFigure(f, px, u),
     ];
+    // Everything that stands up shares ONE depth order (_orderedSlabs): the
+    // blocks, every stretch of a room's walls, the pieces of roofed blocks and
+    // the figures. Painted in separate passes, a statue would show through a
+    // wall in front of it, or a wall behind it would cut across it, depending
+    // on which way the map is turned.
+    _Slab joined(String kind, List<Offset> pts, double h, {List<bool>? outer, bool convex = true, _Figure? figure, _Prism? prism}) {
+      var cx = 0.0, cy = 0.0;
+      for (final o in pts) {
+        cx += o.dx;
+        cy += o.dy;
+      }
+      return _Slab(
+        kind: kind,
+        norm: [for (final o in pts) Offset(o.dx / px.width, o.dy / px.height)],
+        pts: pts,
+        height: h,
+        centroid: Offset(cx / pts.length, cy / pts.length),
+        sign: _signOf(pts),
+        outer: outer ?? List<bool>.filled(pts.length, true),
+        convex: convex,
+        figure: figure,
+        prism: prism,
+      );
+    }
+
+    for (final pr in prisms) {
+      if (pr.height <= 0) continue;
+      if (pr.solid) {
+        for (final pc in _convexPieces(pr.pts)) {
+          slabs.add(joined('psolid', pc.pts, pr.height, outer: pc.outer, convex: pc.convex, prism: pr));
+        }
+        continue;
+      }
+      final n = pr.pts.length;
+      for (var i = 0; i < n; i++) {
+        final a = pr.pts[i], b = pr.pts[(i + 1) % n];
+        final len = (b - a).distance;
+        if (len < 1e-6) continue;
+        final d = (b - a) / len;
+        final out = pr.sign > 0 ? Offset(d.dy, -d.dx) : Offset(-d.dy, d.dx);
+        for (final (t0, t1) in _solidRuns(pr.gaps.isEmpty ? const [] : pr.gaps[i])) {
+          final b0 = Offset.lerp(a, b, t0)!, b1 = Offset.lerp(a, b, t1)!;
+          if ((b1 - b0).distance < 0.5) continue;
+          slabs.add(joined('pwall', [b0, b1, b1 + out * 0.8, b0 + out * 0.8], pr.height,
+              outer: const [true, false, true, false], prism: pr));
+        }
+      }
+    }
+    for (final f in _figures) {
+      slabs.add(joined('figure', f.foot, f.height, figure: f));
+    }
+    _slabs = slabs;
     _solids = [
       for (final p in prisms)
         if (p.solid) p,
@@ -1177,9 +1368,16 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   /// A monument's mesh in map space: its frame (u across, w forward, v up, in
   /// units of its height) turned to face `facing` at its anchor, with every
   /// triangle's normal and shaded colour worked out once.
-  _Figure _placeFigure(MapFigure f, Size px, double u) {
+  _Figure _placeFigure(MapFigure f, Size px, double u, {String? meshKey}) {
     final h = f.height * u;
     final ax = f.x * px.width, ay = f.y * px.height;
+    // the base on the floor; a palm (no footprint) takes a small square
+    final fp = f.footprint.length == 4 ? f.footprint : const [-0.06, 0.06, -0.06, 0.06];
+    final fx0 = math.cos(f.facing), fy0 = math.sin(f.facing);
+    final foot = [
+      for (final (pu, pw) in [(fp[0], fp[2]), (fp[1], fp[2]), (fp[1], fp[3]), (fp[0], fp[3])])
+        Offset(ax + (fy0 * pu + fx0 * pw) * h, ay + (-fx0 * pu + fy0 * pw) * h),
+    ];
     final sil = kSilhouettes[f.mesh];
     if (sil != null) {
       return _Figure(
@@ -1192,17 +1390,24 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         normals: Float64List(0),
         lit: Int32List(0),
         litDark: Int32List(0),
-        outline: [for (var i = 0; i + 1 < sil.uv.length; i += 2) Offset(sil.uv[i], sil.uv[i + 1])],
+        foot: foot,
+        outline: [
+          for (var i = 0; i + 1 < sil.uv.length; i += 2)
+            Offset(sil.uv[i], sil.uv[i + 1]),
+        ],
         color: sil.color,
       );
     }
-    final mesh = kMeshes[f.mesh]!;
-    final fx = math.cos(f.facing), fy = math.sin(f.facing); // forward, plan coordinates
+    final mesh = kMeshes[meshKey ?? f.mesh]!;
+    final fx = math.cos(f.facing),
+        fy = math.sin(f.facing); // forward, plan coordinates
     final lx = fy, ly = -fx; // the statue's left
     final n = mesh.verts.length ~/ 3;
     final xyz = Float64List(n * 3);
     for (var i = 0; i < n; i++) {
-      final pu = mesh.verts[i * 3], pw = mesh.verts[i * 3 + 1], pv = mesh.verts[i * 3 + 2];
+      final pu = mesh.verts[i * 3],
+          pw = mesh.verts[i * 3 + 1],
+          pv = mesh.verts[i * 3 + 2];
       xyz[i * 3] = ax + (lx * pu + fx * pw) * h;
       xyz[i * 3 + 1] = ay + (ly * pu + fy * pw) * h;
       xyz[i * 3 + 2] = pv * h;
@@ -1213,10 +1418,18 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     const lx0 = -0.45, ly0 = -0.55, lz0 = 0.7;
     final ll = math.sqrt(lx0 * lx0 + ly0 * ly0 + lz0 * lz0);
     for (var k = 0; k < t; k++) {
-      final a = mesh.tris[k * 3] * 3, b = mesh.tris[k * 3 + 1] * 3, c = mesh.tris[k * 3 + 2] * 3;
-      final ux = xyz[b] - xyz[a], uy = xyz[b + 1] - xyz[a + 1], uz = xyz[b + 2] - xyz[a + 2];
-      final vx = xyz[c] - xyz[a], vy = xyz[c + 1] - xyz[a + 1], vz = xyz[c + 2] - xyz[a + 2];
-      var nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+      final a = mesh.tris[k * 3] * 3,
+          b = mesh.tris[k * 3 + 1] * 3,
+          c = mesh.tris[k * 3 + 2] * 3;
+      final ux = xyz[b] - xyz[a],
+          uy = xyz[b + 1] - xyz[a + 1],
+          uz = xyz[b + 2] - xyz[a + 2];
+      final vx = xyz[c] - xyz[a],
+          vy = xyz[c + 1] - xyz[a + 1],
+          vz = xyz[c + 2] - xyz[a + 2];
+      var nx = uy * vz - uz * vy,
+          ny = uz * vx - ux * vz,
+          nz = ux * vy - uy * vx;
       final nl = math.sqrt(nx * nx + ny * ny + nz * nz);
       if (nl > 0) {
         nx /= nl;
@@ -1233,6 +1446,18 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       lit[k] = base.withShade(0.56 + 0.5 * lam + sky).toARGB32();
       litDark[k] = base.withShade(0.46 + 0.46 * lam + sky).toARGB32();
     }
+    Int32List? layer;
+    if (mesh.layers.isNotEmpty) {
+      layer = Int32List(t);
+      var l = 0;
+      for (var k = 0; k < t; k++) {
+        while (l < mesh.layers.length && k >= mesh.layers[l]) {
+          l++;
+        }
+        layer[k] = l;
+      }
+    }
+    final loKey = '${f.mesh}_lo';
     return _Figure(
       id: f.id,
       norm: Offset(f.x, f.y),
@@ -1243,6 +1468,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       normals: normals,
       lit: lit,
       litDark: litDark,
+      foot: foot,
+      layer: layer,
+      lo: meshKey == null && kMeshes.containsKey(loKey) ? _placeFigure(f, px, u, meshKey: loKey) : null,
     );
   }
 
@@ -1261,12 +1489,6 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final depth = [
       for (final sl in _slabs) sl.centroid.dx * vx + sl.centroid.dy * vy,
     ];
-    var tallest = 0.0;
-    for (final sl in _slabs) {
-      tallest = math.max(tallest, sl.height);
-    }
-    // a tall slab hides things up to ~1.3x its height behind it (tilt <= 53 deg)
-    final reach = tallest * 2.5 + 1;
     // Each slab as it appears on screen: its footprint plus the footprint
     // lifted by its height (tan of the max tilt ~ 1.35). Only pairs whose
     // pictures overlap constrain each other; ordering the rest only invents
@@ -1275,26 +1497,45 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final swept = <List<Offset>>[
       for (final sl in _slabs)
         _hullOf([
-          for (final p in sl.hull) Offset(p.dx * cs - p.dy * sn, p.dx * sn + p.dy * cs),
           for (final p in sl.hull)
-            Offset(p.dx * cs - p.dy * sn, p.dx * sn + p.dy * cs - sl.height * 1.35),
+            Offset(p.dx * cs - p.dy * sn, p.dx * sn + p.dy * cs),
+          for (final p in sl.hull)
+            Offset(
+              p.dx * cs - p.dy * sn,
+              p.dx * sn + p.dy * cs - sl.height * 1.35,
+            ),
         ]),
     ];
+    if (!identical(_slabPairsOf, _slabs)) {
+      // each slab's picture reaches at most ~1.35x its own height beyond its
+      // footprint, whichever way the map is turned (tilt <= 53 deg)
+      final reachOf = [for (final sl in _slabs) sl.bounds.inflate(sl.height * 1.4 + 1)];
+      final pairs = <int>[];
+      for (var i = 0; i < n; i++) {
+        final bi = reachOf[i];
+        for (var j = i + 1; j < n; j++) {
+          if (bi.overlaps(reachOf[j])) {
+            pairs
+              ..add(i)
+              ..add(j);
+          }
+        }
+      }
+      _slabPairs = Int32List.fromList(pairs);
+      _slabPairsOf = _slabs;
+    }
     final after = List<List<int>>.generate(n, (_) => <int>[]);
     final waiting = List<int>.filled(n, 0);
-    for (var i = 0; i < n; i++) {
-      final bi = _slabs[i].bounds.inflate(reach);
-      for (var j = i + 1; j < n; j++) {
-        if (!bi.overlaps(_slabs[j].bounds)) continue;
-        if (!_hullsOverlap(swept[i], swept[j])) continue;
-        final r = _slabFront(_slabs[i], _slabs[j], vx, vy);
-        if (r > 0) {
-          after[i].add(j);
-          waiting[j]++;
-        } else if (r < 0) {
-          after[j].add(i);
-          waiting[i]++;
-        }
+    for (var p = 0; p < _slabPairs.length; p += 2) {
+      final i = _slabPairs[p], j = _slabPairs[p + 1];
+      if (!_hullsOverlap(swept[i], swept[j])) continue;
+      final r = _slabFront(_slabs[i], _slabs[j], vx, vy);
+      if (r > 0) {
+        after[i].add(j);
+        waiting[j]++;
+      } else if (r < 0) {
+        after[j].add(i);
+        waiting[i]++;
       }
     }
     final done = List<bool>.filled(n, false);
@@ -1330,12 +1571,8 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     return widget.highlighted.contains(id) ? 0.6 : 0;
   }
 
-  /// Regions lifted out of the veil and outlined. A gallery is not: its traced
-  /// outline is only approximate, so the pin alone marks it.
-  Set<String> get _focusIds => {
-    for (final id in [...widget.highlighted, if (widget.selectedRegionId != null) widget.selectedRegionId!])
-      if (widget.regions.where((r) => r.id == id).firstOrNull?.kind != RegionKind.gallery) id,
-  };
+  Set<String> get _focusIds =>
+      focusRegions(widget.regions, widget.highlighted, widget.selectedRegionId);
 
   /// Height of the ground at a normalised point (only solid blocks have a roof).
   double _groundZ(Offset n, {bool lifted = true}) {
@@ -1353,7 +1590,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       if (s.kind == 'wall' ||
           s.kind == 'rwall' ||
           s.kind == 'monument' ||
-          s.kind == 'statue') {
+          s.kind == 'statue' ||
+          s.kind == 'figure' ||
+          s.kind == 'pwall' ||
+          s.kind == 'psolid') {
         continue;
       }
       if (s.height > z && s.contains(n)) z = s.height;
@@ -1364,38 +1604,37 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   /// Route legs, densified, with the ground height under each step, so the
   /// ribbon climbs onto roofs instead of hiding under them.
   void _buildRoute() {
+    _routeGeo = _geoOf(widget.legs);
+    _walkedGeo = _geoOf(widget.walkedLegs);
+    _laterGeo = _geoOf(widget.laterLegs);
+  }
+
+  /// Each leg as x, y, z triples (map px) laid on the floor, one point at
+  /// least every 12 px so the line follows steps and slabs.
+  List<Float64List> _geoOf(List<RouteLeg> legs) {
     final px = _px;
     final out = <Float64List>[];
-    for (final leg in widget.legs) {
+    for (final leg in legs) {
       final v = <double>[];
       for (var i = 0; i < leg.points.length; i++) {
         final b = leg.points[i];
         if (i == 0) {
-          v.addAll([
-            b.dx * px.width,
-            b.dy * px.height,
-            _groundZ(b, lifted: false),
-          ]);
+          v.addAll([b.dx * px.width, b.dy * px.height, _groundZ(b, lifted: false)]);
           continue;
         }
         final a = leg.points[i - 1];
-        final len =
-            (Offset(b.dx * px.width, b.dy * px.height) -
-                    Offset(a.dx * px.width, a.dy * px.height))
-                .distance;
+        final len = (Offset(b.dx * px.width, b.dy * px.height) -
+                Offset(a.dx * px.width, a.dy * px.height))
+            .distance;
         final steps = math.max(1, (len / 12).ceil());
         for (var k = 1; k <= steps; k++) {
           final n = Offset.lerp(a, b, k / steps)!;
-          v.addAll([
-            n.dx * px.width,
-            n.dy * px.height,
-            _groundZ(n, lifted: false),
-          ]);
+          v.addAll([n.dx * px.width, n.dy * px.height, _groundZ(n, lifted: false)]);
         }
       }
       out.add(Float64List.fromList(v));
     }
-    _routeGeo = out;
+    return out;
   }
 
   // ── artwork: recoloured SVG -> bitmap ──────────────────────────
@@ -1407,6 +1646,11 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     _image = null;
     _svg = null;
     _capturing = false;
+    final ready = MuseumMapCanvas.debugArt[id];
+    if (ready != null) {
+      setState(() => _image = ready.clone());
+      return;
+    }
     final String raw;
     try {
       raw = await rootBundle.loadString(widget.map.asset);
@@ -1415,7 +1659,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       return; // the map still draws its rooms, walls and pins without it
     }
     if (_disposed || !mounted || _loadedId != id) return;
-    setState(() => _svg = _recolor(raw));
+    setState(() => _svg = _recolor(raw, id));
   }
 
   double _captureRatio() {
@@ -1490,9 +1734,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     required bool selected,
     required bool target,
     required bool pinned,
+    bool stop = false,
   }) {
     if (selected) return 0;
-    if (target) return 1;
+    if (target || stop) return 1;
     if (pinned) return 2;
     return switch (p.category) {
       PlaceCategory.attraction ||
@@ -1516,6 +1761,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
                 selected: p.id == sel?.id,
                 target: p.id == widget.routeTargetId,
                 pinned: widget.pinned.contains(p.id),
+                stop: widget.stopNodes.containsKey(p.id),
               ),
             ),
         ]..sort(
@@ -1580,7 +1826,8 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
   }
 
   ({TextPainter fill, TextPainter halo}) _text(_LabelItem it, GemPalette p) {
-    final key = '${it.kind.index}|${it.text}|${it.size}|${p.dark}|${S.lang.code}';
+    final key =
+        '${it.kind.index}|${it.text}|${it.size}|${p.dark}|${S.lang.code}';
     return _texts.putIfAbsent(key, () {
       // capitals and tracking only suit alphabets with letter case
       final spaced = !S.rtl && !S.lang.cjk;
@@ -1595,7 +1842,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
             : 'Arial',
         fontSize: it.size,
         fontWeight: it.weight,
-        letterSpacing: it.kind == _LabelKind.theme ? (spaced ? 1.6 : 0) : (S.lang.cjk ? 0 : 0.2),
+        letterSpacing: it.kind == _LabelKind.theme
+            ? (spaced ? 1.6 : 0)
+            : (S.lang.cjk ? 0 : 0.2),
         height: 1,
         locale: S.lang.locale,
       );
@@ -1660,6 +1909,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       reach: far * math.sin(tilt) + _maxHeight * zoom * math.cos(tilt),
     );
   }
+
   Matrix4 _full() => _cam().compose(widget.transform.value);
 
   double _fitScale(Size vp, int quarter) {
@@ -1678,29 +1928,61 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final b = _bounds.center;
     return Matrix4.translationValues(c.dx, c.dy, 0)
       ..rotateZ(quarter * math.pi / 2)
-      ..scale(s, s, s)
-      ..translate(-b.dx, -b.dy);
+      ..scaleByDouble(s, s, s, 1)
+      ..translateByDouble(-b.dx, -b.dy, 0, 1);
   }
 
   void _focusOn(Size vp) {
-    final p = widget.focusPoint;
+    final rect = widget.focusRect;
+    final p = rect?.center ?? widget.focusPoint;
     if (p == null) return;
-    final c = _viewCenter;
     final cur = widget.transform.value;
-    final z = math
-        .max(_fit0 * 3.2, _scaleOf(cur))
-        .clamp(_minScale, _maxScale)
-        .toDouble();
+    final double z;
+    if (rect != null) {
+      // fit the stretch, turned as the map is, into the free part of the
+      // screen; the tilt squeezes its depth to about 60 %
+      final pad = widget.padding;
+      final aw = math.max(1.0, vp.width - pad.horizontal) * 0.72,
+          ah = math.max(1.0, vp.height - pad.vertical) * 0.72;
+      final th = _angleOf(cur), ct = math.cos(th).abs(), st = math.sin(th).abs();
+      final w = rect.width * _px.width, h = rect.height * _px.height;
+      final ew = math.max(1.0, ct * w + st * h),
+          eh = math.max(1.0, st * w + ct * h) * (widget.tilted ? 0.6 : 1);
+      z = math.min(aw / ew, ah / eh).clamp(_fit0 * 1.1, _fit0 * 4.2).toDouble();
+    } else {
+      z = math.max(_fit0 * 3.2, _scaleOf(cur)).toDouble();
+    }
+    _glideTo = Offset(p.dx * _px.width, p.dy * _px.height);
+    _glideZ1 = z.clamp(_minScale, _maxScale).toDouble();
+    final inv = Matrix4.copy(cur)..invert();
+    _glideFrom = MatrixUtils.transformPoint(inv, _viewCenter);
+    _glideZ0 = _scaleOf(cur);
+    if (_reduceMotion) {
+      _glide.value = 1;
+      _onGlide();
+    } else {
+      _glide.forward(from: 0);
+    }
+  }
+
+  /// One frame of a camera glide: the point at the centre and the zoom are
+  /// eased together (zoom on a log scale, so it feels even).
+  void _onGlide() {
+    final t = Curves.easeInOutCubic.transform(_glide.value);
+    final p = Offset.lerp(_glideFrom, _glideTo, t)!;
+    final z = math.exp(ui.lerpDouble(math.log(_glideZ0), math.log(_glideZ1), t)!);
+    final c = _viewCenter;
     widget.transform.value = _clampPan(
       Matrix4.translationValues(c.dx, c.dy, 0)
-        ..rotateZ(_angleOf(cur))
-        ..scale(z, z, z)
-        ..translate(-p.dx * _px.width, -p.dy * _px.height),
+        ..rotateZ(_angleOf(widget.transform.value))
+        ..scaleByDouble(z, z, z, 1)
+        ..translateByDouble(-p.dx, -p.dy, 0, 1),
     );
   }
 
   void _zoomAtCenter(double factor) {
     if (_vp == Size.zero) return;
+    _glide.stop();
     final cur = widget.transform.value;
     final target = (_scaleOf(cur) * factor)
         .clamp(_minScale, _maxScale)
@@ -1708,8 +1990,8 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final s = target / _scaleOf(cur);
     final c = _viewCenter;
     final m = Matrix4.translationValues(c.dx, c.dy, 0)
-      ..scale(s, s, s)
-      ..translate(-c.dx, -c.dy);
+      ..scaleByDouble(s, s, s, 1)
+      ..translateByDouble(-c.dx, -c.dy, 0, 1);
     widget.transform.value = _clampPan(m * cur);
   }
 
@@ -1741,6 +2023,7 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
 
   // ── gestures: pan, pinch-zoom, two-finger rotate (on the tilted plane) ──
   void _onScaleStart(ScaleStartDetails d) {
+    _glide.stop();
     _startM = widget.transform.value.clone();
     _startFlat = _cam().toFlat(d.localFocalPoint);
   }
@@ -1752,8 +2035,8 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final s = target / start;
     final m = Matrix4.translationValues(f.dx, f.dy, 0)
       ..rotateZ(d.rotation)
-      ..scale(s, s, s)
-      ..translate(-_startFlat.dx, -_startFlat.dy);
+      ..scaleByDouble(s, s, s, 1)
+      ..translateByDouble(-_startFlat.dx, -_startFlat.dy, 0, 1);
     widget.transform.value = _clampPan(m * _startM);
   }
 
@@ -1766,8 +2049,8 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
     final s = target / _scaleOf(cur);
     final f = _cam().toFlat(e.localPosition);
     final m = Matrix4.translationValues(f.dx, f.dy, 0)
-      ..scale(s, s, s)
-      ..translate(-f.dx, -f.dy);
+      ..scaleByDouble(s, s, s, 1)
+      ..translateByDouble(-f.dx, -f.dy, 0, 1);
     widget.transform.value = _clampPan(m * cur);
   }
 
@@ -1861,17 +2144,36 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
                     ),
                   ),
                   // 2 — the model (floor, walls, blocks, monuments), the route, the
-                  // names: three layers, so the route's moving dashes (_loop, 60 fps
-                  // while a route is shown) repaint the route alone, not the scene
+                  // names: three layers, so the route's draw-in repaints the
+                  // route alone, not the scene
                   for (final (layer, anims) in [
-                    (_Layer.scene, <Listenable>[widget.transform, _tilt, _liftCtl]),
-                    (_Layer.route, <Listenable>[widget.transform, _tilt, _liftCtl, _loop, widget.routeProgress]),
-                    (_Layer.labels, <Listenable>[widget.transform, _tilt, _liftCtl]),
+                    (
+                      _Layer.scene,
+                      <Listenable>[widget.transform, _tilt, _liftCtl],
+                    ),
+                    (
+                      _Layer.route,
+                      <Listenable>[
+                        widget.transform,
+                        _tilt,
+                        _liftCtl,
+                        widget.routeProgress,
+                      ],
+                    ),
+                    (
+                      _Layer.labels,
+                      <Listenable>[widget.transform, _tilt, _liftCtl],
+                    ),
                   ])
                     Positioned.fill(
                       child: RepaintBoundary(
                         child: CustomPaint(
-                          painter: _IsoPainter(s: this, pal: p, layer: layer, repaint: Listenable.merge(anims)),
+                          painter: _IsoPainter(
+                            s: this,
+                            pal: p,
+                            layer: layer,
+                            repaint: Listenable.merge(anims),
+                          ),
                         ),
                       ),
                     ),
@@ -1980,6 +2282,10 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       );
       youBox = Rect.fromCenter(center: y, width: 40, height: 40);
     }
+    final step = _stepScreen(full);
+    final stepBox = step == null
+        ? null
+        : Rect.fromCenter(center: step, width: 40, height: 40);
     for (final c in _sorted) {
       final pl = c.place;
       if (pl.category.isDense && !(denseVisible || c.prio <= 2)) continue;
@@ -2000,7 +2306,8 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         // rotation and tilt. A small gap keeps neighbours readable.
         final gap = pl.category.isDense ? (rel >= 2.0 ? 1.0 : 3.0) : 4.0;
         final box = _pinBox(pl, s).inflate(gap / 2);
-        var clash = youBox != null && box.overlaps(youBox);
+        var clash = (youBox != null && box.overlaps(youBox)) ||
+            (stepBox != null && box.overlaps(stepBox));
         if (!clash) {
           for (final o in placedBoxes) {
             if (box.overlaps(o)) {
@@ -2012,17 +2319,32 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
         if (clash) continue;
       }
       placedBoxes.add(
-        _pinBox(pl, s, selected: pl.id == widget.selected?.id).inflate(
-          (pl.category.isDense ? 0.5 : 2.0),
-        ),
+        _pinBox(
+          pl,
+          s,
+          selected: pl.id == widget.selected?.id,
+        ).inflate((pl.category.isDense ? 0.5 : 2.0)),
       );
       out.add((place: pl, screen: s, prio: c.prio));
     }
     return out;
   }
 
+  /// The pin's place in the walk being followed, if it is a stop.
+  PinStop? _stopOf(MapPlace pl) {
+    final g = widget.trip, node = widget.stopNodes[pl.id];
+    if (g == null || node == null) return null;
+    final n = g.numberOf(node), st = g.stateOf(node);
+    if (n == null || st == null) return null;
+    return (number: n, total: g.total, state: st, last: n == g.total);
+  }
+
+  bool get _routeShown =>
+      widget.legs.isNotEmpty || widget.laterLegs.isNotEmpty || widget.trip != null;
+
   List<Widget> _pinWidgets(List<_Placed> pins) {
     final sel = widget.selected;
+    final routing = _routeShown;
     // far pins first, so near ones overlap them; the selected one always on top
     final order = [...pins]
       ..sort((a, b) {
@@ -2043,23 +2365,53 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
             selected: sel?.id == c.place.id,
             pinned: widget.pinned.contains(c.place.id),
             target: widget.routeTargetId == c.place.id,
+            stop: _stopOf(c.place),
+            // while a route is shown, pins off it step back so the way reads first
+            quiet: routing && c.prio > 2,
             onTap: () => widget.onPlaceTap(c.place),
           ),
         ),
     ];
   }
 
+  /// Where the instruction being read happens, on screen (null when it is on
+  /// another map or off screen).
+  Offset? _stepScreen(Matrix4 full) {
+    final st = widget.stepFocus;
+    final at = st?.position;
+    if (st == null || at == null || st.mapId != widget.map.id) return null;
+    // the arrival is already marked by the destination's pin and ring
+    if (st.kind == StepKind.arrive) return null;
+    final s = _screenOf(full, at, z: _groundZ(at));
+    return _onScreen(s) ? s : null;
+  }
+
   List<Widget> _markers(Matrix4 full, GemPalette p) {
+    final out = <Widget>[];
+    final step = _stepScreen(full);
+    if (step != null) {
+      out.add(
+        Positioned(
+          key: const ValueKey('step'),
+          left: step.dx - 19,
+          top: step.dy - 19,
+          width: 38,
+          height: 38,
+          child: IgnorePointer(child: _StepMarker(pal: p, icon: widget.stepFocus!.icon)),
+        ),
+      );
+    }
     if (widget.originMapId != widget.map.id || widget.originPos == null) {
-      return const [];
+      return out;
     }
     final s = _screenOf(
       full,
       widget.originPos!,
       z: _groundZ(widget.originPos!),
     );
-    if (!_onScreen(s)) return const [];
+    if (!_onScreen(s)) return out;
     return [
+      ...out,
       Positioned(
         key: const ValueKey('you'),
         left: s.dx - 30,
@@ -2084,13 +2436,15 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
       final s = _screenOf(full, leg.points.last, z: _groundZ(leg.points.last));
       if (!_onScreen(s, 120)) continue;
       final next = leg.nextMapId == null ? null : allMaps[leg.nextMapId!];
+      // wide enough for the longer languages to say it in two lines
+      final w = math.min(340.0, _vp.width - 24);
       res.add(
         Positioned(
           key: ValueKey('chip_$i'),
-          left: s.dx - 140,
-          top: s.dy - 64 - 26,
-          width: 280,
-          height: 64,
+          left: (s.dx - w / 2).clamp(12.0, math.max(12.0, _vp.width - 12 - w)),
+          top: s.dy - 76 - 26,
+          width: w,
+          height: 76,
           child: Center(
             child: _ExitChip(
               pal: p,
@@ -2101,7 +2455,9 @@ class _MuseumMapCanvasState extends State<MuseumMapCanvas>
                 PortalKind.door => Icons.login,
               },
               label: leg.exitStep == null ? '' : S.step(leg.exitStep!),
-              detail: next == null ? null : S.t('tap_to_open', x: S.mapShort(next)),
+              detail: next == null
+                  ? null
+                  : S.t('tap_to_open', x: S.mapShort(next)),
               onTap: next == null ? null : () => widget.onPortalTap(next.id),
             ),
           ),
@@ -2157,8 +2513,12 @@ class _GroundPainter extends CustomPainter {
 enum _Layer { scene, route, labels }
 
 class _IsoPainter extends CustomPainter {
-  _IsoPainter({required this.s, required this.pal, required this.layer, required Listenable repaint})
-    : super(repaint: repaint);
+  _IsoPainter({
+    required this.s,
+    required this.pal,
+    required this.layer,
+    required Listenable repaint,
+  }) : super(repaint: repaint);
 
   final _MuseumMapCanvasState s;
   final GemPalette pal;
@@ -2204,8 +2564,10 @@ class _IsoPainter extends CustomPainter {
       };
       canvas.drawPath(path, Paint()..color = c);
     }
-    _groundFills(canvas);
     _art(canvas, px);
+    // gardens, car parks and plazas over the plan's own fills: gardens in the
+    // green of the official GEM map legend (the PDF plan fills them tan)
+    _groundFills(canvas);
     _bayLines(canvas);
     canvas.restore();
 
@@ -2213,30 +2575,15 @@ class _IsoPainter extends CustomPainter {
     // Per room: far walls -> what stands on the floor -> near walls. So a tread
     // or a case is hidden by the wall in front of it and hides the wall behind
     // it, whatever the yaw/tilt, instead of every wall landing on top of it.
-    final prisms = [...s._prisms]
-      ..sort(
-        (a, b) => project(
-          full,
-          a.centroid.dx,
-          a.centroid.dy,
-        ).dy.compareTo(project(full, b.centroid.dx, b.centroid.dy).dy),
-      );
-    final rest = focus.isEmpty
-        ? prisms
-        : [
-            for (final pr in prisms)
-              if (!focus.contains(pr.region.id)) pr,
-          ];
-    for (final pr in rest) {
-      _prism(canvas, full, yaw, pr, view, false, _Pass.back);
-    }
-    _slabsPaint(canvas, full, yaw, view);
-    for (final pr in rest) {
-      _prism(canvas, full, yaw, pr, view, false, _Pass.front);
-    }
-    // The statues are taller than every wall, so they are drawn after the near
-    // walls: a wall must never be painted across a standing figure.
-    _figuresPaint(canvas, full, yaw, view);
+    final prisms = focus.isEmpty
+        ? const <_Prism>[]
+        : ([...s._prisms]
+            ..sort(
+              (a, b) => project(full, a.centroid.dx, a.centroid.dy).dy.compareTo(project(full, b.centroid.dx, b.centroid.dy).dy),
+            ));
+    // walls, blocks, roofed buildings and figures in one depth order (the
+    // walls of focused rooms are drawn again, lifted, above the veil)
+    _slabsPaint(canvas, full, yaw, view, skip: focus);
     if (focus.isNotEmpty) {
       final lit = [
         for (final pr in prisms)
@@ -2261,39 +2608,124 @@ class _IsoPainter extends CustomPainter {
     'food' => const Color(0xffc4705d),
     'service' => Color.lerp(pal.pinService, pal.surfaceHi, 0.45)!,
     'plinth' => pal.dark ? const Color(0xffd8bf86) : const Color(0xffcfb06a),
-    'monument' || 'statue' => const Color(0xff4a4f55),
+    'monument' => const Color(0xff4a4f55),
+    // the colossi's plinths: stone, not a dark hole under their feet
+    'statue' => pal.dark ? const Color(0xff8c8478) : const Color(0xffb3aa9a),
     'wall' || 'rwall' => pal.solid,
     'step' => Color.lerp(pal.gold, _floorColor, 0.55)!,
     'ledge' => Color.lerp(pal.solid, _floorColor, 0.45)!,
     _ => Color.lerp(pal.solid, _floorColor, 0.55)!,
   };
 
-  /// Solids that stand on the floor, back to front. Painted between a room's
-  /// far walls and its near walls (see paint). With [inside], only the slabs
-  /// whose centre lies in one of those rooms.
+  /// Everything that stands up, back to front, in one depth order (see
+  /// [_MuseumMapCanvasState._orderedSlabs]). Faces and roofs of consecutive
+  /// solids go into one batch of triangles (one draw call instead of a path
+  /// each); a figure or a roofed block (whose roof shows the plan) flushes it.
+  /// [skip]: rooms drawn later, lifted above the veil. With [inside], only the
+  /// blocks standing in those rooms (the rooms' walls and figures are drawn
+  /// by their own passes).
   void _slabsPaint(
     Canvas canvas,
     Matrix4 full,
     double yaw,
     Rect view, {
     List<_Prism>? inside,
+    Set<String> skip = const {},
   }) {
     if (s._slabs.isEmpty) return;
-    final order = [
-      for (final sl in s._orderedSlabs(yaw))
-        if (inside == null ||
-            inside.any((pr) => pr.region.contains(sl.normCentroid)))
-          sl,
-    ];
     final cs = math.cos(yaw), sn = math.sin(yaw);
-    for (final sl in order) {
+    final pos = <double>[];
+    final cols = <int>[];
+    void tri(Offset a, Offset b, Offset c, int col) {
+      pos
+        ..add(a.dx)
+        ..add(a.dy)
+        ..add(b.dx)
+        ..add(b.dy)
+        ..add(c.dx)
+        ..add(c.dy);
+      cols
+        ..add(col)
+        ..add(col)
+        ..add(col);
+    }
+
+    void quad(Offset a, Offset b, Offset c, Offset d, int col) {
+      tri(a, b, c, col);
+      tri(a, c, d, col);
+    }
+
+    // a top edge, as a thin band (no strokes inside a batch)
+    void edge(Offset a, Offset b, double w, int col) {
+      final d = b - a, l = d.distance;
+      if (l < 1e-3) return;
+      final n = Offset(-d.dy, d.dx) * (w / 2 / l);
+      quad(a - n, b - n, b + n, a + n, col);
+    }
+
+    void flush() {
+      if (pos.isEmpty) return;
+      canvas.drawVertices(
+        ui.Vertices.raw(ui.VertexMode.triangles, Float32List.fromList(pos), colors: Int32List.fromList(cols)),
+        BlendMode.dst,
+        Paint(),
+      );
+      pos.clear();
+      cols.clear();
+    }
+
+    final rimMix = pal.rim;
+    final wallDark = _shade(pal.solid, 0.7), wallLit = _shade(pal.solid, 1.3);
+    final inner = Color.lerp(pal.solid, pal.rim, 0.3)!;
+    final innerDark = _shade(inner, 0.8), innerLit = _shade(inner, 1.12);
+    final wallRim = Color.lerp(pal.solid, pal.rim, 0.55)!.toARGB32();
+    for (final sl in s._orderedSlabs(yaw)) {
+      final joined = sl.kind == 'figure' || sl.kind == 'pwall' || sl.kind == 'psolid';
+      if (inside != null) {
+        if (joined || !inside.any((pr) => pr.region.contains(sl.normCentroid))) continue;
+      } else if (sl.prism != null && skip.contains(sl.prism!.region.id)) {
+        continue;
+      }
+      if (sl.kind == 'figure') {
+        flush();
+        _paintFigure(canvas, full, yaw, view, sl.figure!);
+        continue;
+      }
+      if (sl.kind == 'psolid') {
+        flush();
+        _solidPiece(canvas, full, yaw, view, sl, skip.contains(sl.prism!.region.id));
+        continue;
+      }
+      if (sl.kind == 'pwall') {
+        final pr = sl.prism!;
+        final h = pr.height * (1 + 0.7 * s._liftOf(pr.region.id));
+        final b0 = project(full, sl.pts[0].dx, sl.pts[0].dy), b1 = project(full, sl.pts[1].dx, sl.pts[1].dy);
+        final u0 = project(full, sl.pts[0].dx, sl.pts[0].dy, h), u1 = project(full, sl.pts[1].dx, sl.pts[1].dy, h);
+        final r = Rect.fromPoints(b0, b1).expandToInclude(Rect.fromPoints(u0, u1));
+        if (!view.overlaps(r)) continue;
+        final d = sl.pts[1] - sl.pts[0], len = d.distance;
+        final nx = pr.sign > 0 ? d.dy / len : -d.dy / len, ny = pr.sign > 0 ? -d.dx / len : d.dx / len;
+        final sx = nx * cs - ny * sn, sy = nx * sn + ny * cs;
+        final facing = sy >= 0; // its outer face towards us, or the inside of the room
+        final k = ((facing ? (sx * _lx + sy * _ly) : -(sx * _lx + sy * _ly)) * 0.5 + 0.5).clamp(0.0, 1.0);
+        final c = facing ? Color.lerp(wallDark, wallLit, k)! : Color.lerp(innerDark, innerLit, k)!;
+        quad(b0, b1, u1, u0, c.toARGB32());
+        edge(u0, u1, 1.2, wallRim);
+        continue;
+      }
       final n = sl.pts.length;
       final h = sl.height;
       final base = [for (final p in sl.pts) project(full, p.dx, p.dy)];
       final top = [for (final p in sl.pts) project(full, p.dx, p.dy, h)];
       var l = double.infinity, t = double.infinity;
       var r = -double.infinity, b = -double.infinity;
-      for (final o in [...base, ...top]) {
+      for (final o in base) {
+        l = math.min(l, o.dx);
+        t = math.min(t, o.dy);
+        r = math.max(r, o.dx);
+        b = math.max(b, o.dy);
+      }
+      for (final o in top) {
         l = math.min(l, o.dx);
         t = math.min(t, o.dy);
         r = math.max(r, o.dx);
@@ -2303,16 +2735,11 @@ class _IsoPainter extends CustomPainter {
       final roofC = _slabColor(sl.kind);
       final dark = _shade(roofC, 0.72), lit = _shade(roofC, 1.05);
       final order2 = List<int>.generate(n, (i) => i)
-        ..sort(
-          (a, c) => (base[a].dy + base[(a + 1) % n].dy).compareTo(
-            base[c].dy + base[(c + 1) % n].dy,
-          ),
-        );
+        ..sort((a, c) => (base[a].dy + base[(a + 1) % n].dy).compareTo(base[c].dy + base[(c + 1) % n].dy));
       for (final i in order2) {
         if (!sl.outer[i]) continue; // a seam inside one solid, not a wall
         final j = (i + 1) % n;
-        final dx = sl.pts[j].dx - sl.pts[i].dx,
-            dy = sl.pts[j].dy - sl.pts[i].dy;
+        final dx = sl.pts[j].dx - sl.pts[i].dx, dy = sl.pts[j].dy - sl.pts[i].dy;
         final len = math.sqrt(dx * dx + dy * dy);
         if (len < 1e-6) continue;
         final nx = sl.sign > 0 ? dy / len : -dy / len;
@@ -2320,47 +2747,88 @@ class _IsoPainter extends CustomPainter {
         final sx = nx * cs - ny * sn, sy = nx * sn + ny * cs;
         if (sy < 0) continue; // face turned away from us
         final k = ((sx * _lx + sy * _ly) * 0.5 + 0.5).clamp(0.0, 1.0);
-        canvas.drawPath(
-          Path()
-            ..moveTo(base[i].dx, base[i].dy)
-            ..lineTo(base[j].dx, base[j].dy)
-            ..lineTo(top[j].dx, top[j].dy)
-            ..lineTo(top[i].dx, top[i].dy)
-            ..close(),
-          Paint()..color = Color.lerp(dark, lit, k)!,
-        );
+        quad(base[i], base[j], top[j], top[i], Color.lerp(dark, lit, k)!.toARGB32());
       }
-      final roof = Path()..addPolygon(top, true);
-      canvas.drawPath(roof, Paint()..color = roofC);
-      final seamed = sl.outer.contains(false);
-      if (seamed) {
-        // hide the hairline between the pieces of one concave solid
-        final seam = Paint()
-          ..color = roofC
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.9;
-        for (var i = 0; i < n; i++) {
-          if (!sl.outer[i]) canvas.drawLine(top[i], top[(i + 1) % n], seam);
+      if (sl.convex) {
+        for (var i = 1; i + 1 < n; i++) {
+          tri(top[0], top[i], top[i + 1], roofC.toARGB32());
         }
+      } else {
+        flush();
+        canvas.drawPath(Path()..addPolygon(top, true), Paint()..color = roofC);
       }
       if (sl.kind != 'step' && sl.kind != 'rwall') {
-        final rimP = Paint()
-          ..color = pal.rim.withValues(alpha: 0.35)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 0.8;
-        if (!seamed) {
-          canvas.drawPath(roof, rimP);
-        } else {
-          for (var i = 0; i < n; i++) {
-            if (sl.outer[i]) canvas.drawLine(top[i], top[(i + 1) % n], rimP);
-          }
+        final rc = Color.lerp(roofC, rimMix, 0.35)!.toARGB32();
+        for (var i = 0; i < n; i++) {
+          if (sl.outer[i]) edge(top[i], top[(i + 1) % n], 0.8, rc);
         }
       }
     }
+    flush();
   }
 
-  /// Gardens (sage green) and parking (slate) lie flat on the ground. They are
-  /// drawn under the artwork, so the plan's own fills and outlines stay on top.
+  /// A convex piece of a roofed block (a building on the site plan): its outer
+  /// walls facing us, and its roof showing the plan.
+  void _solidPiece(Canvas canvas, Matrix4 full, double yaw, Rect view, _Slab sl, bool focused) {
+    final pr = sl.prism!;
+    final h = pr.height * (1 + 0.7 * s._liftOf(pr.region.id));
+    final n = sl.pts.length;
+    final base = [for (final p in sl.pts) project(full, p.dx, p.dy)];
+    final top = [for (final p in sl.pts) project(full, p.dx, p.dy, h)];
+    var r = Rect.fromPoints(base[0], top[0]);
+    for (var i = 1; i < n; i++) {
+      r = r.expandToInclude(Rect.fromPoints(base[i], top[i]));
+    }
+    if (!view.overlaps(r)) return;
+    final cs = math.cos(yaw), sn = math.sin(yaw);
+    // the site's buildings are faced in pale stone (the main building's
+    // translucent alabaster façade), not the slate of indoor walls
+    final stone = pal.dark ? const Color(0xffa39a87) : const Color(0xffd6ccb7);
+    final dark = _shade(stone, 0.72), lit = _shade(stone, 1.08);
+    for (var i = 0; i < n; i++) {
+      if (!sl.outer[i]) continue;
+      final j = (i + 1) % n;
+      final d = sl.pts[j] - sl.pts[i], len = d.distance;
+      if (len < 1e-6) continue;
+      final nx = sl.sign > 0 ? d.dy / len : -d.dy / len, ny = sl.sign > 0 ? -d.dx / len : d.dx / len;
+      final sx = nx * cs - ny * sn, sy = nx * sn + ny * cs;
+      if (sy < 0) continue;
+      final k = ((sx * _lx + sy * _ly) * 0.5 + 0.5).clamp(0.0, 1.0);
+      canvas.drawPath(
+        Path()
+          ..moveTo(base[i].dx, base[i].dy)
+          ..lineTo(base[j].dx, base[j].dy)
+          ..lineTo(top[j].dx, top[j].dy)
+          ..lineTo(top[i].dx, top[i].dy)
+          ..close(),
+        Paint()..color = Color.lerp(dark, lit, k)!,
+      );
+    }
+    // pieces of one roof meet edge to edge: without anti-aliasing they join
+    // seamlessly (no hairline between them); the outer edges get the rim
+    final roof = Path()..addPolygon(top, true);
+    canvas.save();
+    canvas.clipPath(roof, doAntiAlias: false);
+    canvas.drawPath(roof, Paint()
+      ..color = _floorColor
+      ..isAntiAlias = false);
+    if (s._image != null) {
+      canvas.transform((full.clone()..translateByDouble(0.0, 0.0, h, 1)).storage);
+      _art(canvas, s._px);
+    }
+    canvas.restore();
+    if (focused) canvas.drawPath(roof, Paint()..color = pal.accent.withValues(alpha: 0.22));
+    final rim = Paint()
+      ..color = pal.rim.withValues(alpha: focused ? 0.9 : 0.55)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = focused ? 1.8 : 1.2;
+    for (var i = 0; i < n; i++) {
+      if (sl.outer[i]) canvas.drawLine(top[i], top[(i + 1) % n], rim);
+    }
+  }
+
+  /// Gardens (sage green), parking (slate) and open plazas lie flat on the
+  /// ground, drawn over the plan's artwork with their own outline.
   void _groundFills(Canvas canvas) {
     // gardens and parking first, then flat plazas (Events Area) on top of them
     for (final plazas in const [false, true]) {
@@ -2387,7 +2855,9 @@ class _IsoPainter extends CustomPainter {
   void _bayLines(Canvas canvas) {
     if (s._bays.isEmpty) return;
     final paint = Paint()
-      ..color = (pal.dark ? Colors.white : Colors.black).withValues(alpha: pal.dark ? 0.16 : 0.12)
+      ..color = (pal.dark ? Colors.white : Colors.black).withValues(
+        alpha: pal.dark ? 0.16 : 0.12,
+      )
       ..strokeWidth = 0.9;
     for (final (a, b) in s._bays) {
       canvas.drawLine(a, b, paint);
@@ -2397,49 +2867,53 @@ class _IsoPainter extends CustomPainter {
   /// Monuments: every block's visible faces, lit from the upper left, drawn far
   /// to near. Faces are wound outwards consistently, so a face is visible when
   /// its projection turns the same way as the block's base seen from above.
+  /// The figures standing in the focused regions, drawn again above the veil.
   void _figuresPaint(
     Canvas canvas,
     Matrix4 full,
     double yaw,
     Rect view, {
-    Set<String>? focus,
+    required Set<String> focus,
   }) {
     if (s._figures.isEmpty) return;
-    // with [focus]: only what stands in a focused region (walled or open, like
-    // the obelisk's plaza), drawn again above the veil
-    final rooms = focus == null
-        ? const <MapRegion>[]
-        : [for (final r in s.widget.regions) if (focus.contains(r.id)) r];
+    final rooms = [
+      for (final r in s.widget.regions)
+        if (focus.contains(r.id)) r,
+    ];
+    final tx = math.sin(yaw), ty = math.cos(yaw);
+    final figs = [
+      for (final f in s._figures)
+        if (rooms.any((r) => r.contains(f.norm))) f,
+    ]..sort((a, b) => (a.anchor.dx * tx + a.anchor.dy * ty).compareTo(b.anchor.dx * tx + b.anchor.dy * ty));
+    for (final f in figs) {
+      _paintFigure(canvas, full, yaw, view, f);
+    }
+  }
+
+  void _paintFigure(Canvas canvas, Matrix4 full, double yaw, Rect view, _Figure fig) {
+    final foot = project(full, fig.anchor.dx, fig.anchor.dy, 0);
+    final top = project(full, fig.anchor.dx, fig.anchor.dy, fig.height);
+    if (!view.inflate(fig.height * 2).contains(foot) && !view.contains(top)) return;
+    if (fig.outline != null) {
+      _outlineFigure(canvas, full, yaw, fig, foot);
+      return;
+    }
+    // small on screen: the lighter model reads the same and costs a tenth
+    final f = (top - foot).distance < 22 && fig.lo != null ? fig.lo! : fig;
     // direction towards the viewer: on the ground (sin yaw, cos yaw), and up
     final tx = math.sin(yaw), ty = math.cos(yaw);
     const tz = 0.7;
-    final figs = [
-      for (final f in s._figures)
-        if (focus == null || rooms.any((r) => r.contains(f.norm))) f,
-    ]..sort((a, b) => (a.anchor.dx * tx + a.anchor.dy * ty).compareTo(b.anchor.dx * tx + b.anchor.dy * ty));
-    for (final f in figs) {
-      final foot = project(full, f.anchor.dx, f.anchor.dy, 0);
-      final top = project(full, f.anchor.dx, f.anchor.dy, f.height);
-      if (!view.inflate(f.height * 2).contains(foot) && !view.contains(top)) continue;
-      if (f.outline != null) {
-        _outlineFigure(canvas, full, yaw, f, foot);
-        continue;
-      }
-      // contact shadow
-      final rim = project(full, f.anchor.dx + f.height * 0.22, f.anchor.dy, 0);
-      final rx = (rim - foot).distance;
-      canvas.drawOval(
-        Rect.fromCenter(center: foot, width: rx * 2.4, height: rx * 1.1),
-        Paint()..color = pal.shadow.withValues(alpha: pal.dark ? 0.4 : 0.2),
-      );
-      final n = f.xyz.length ~/ 3;
-      final sx = Float32List(n), sy = Float32List(n);
-      for (var i = 0; i < n; i++) {
-        final o = project(full, f.xyz[i * 3], f.xyz[i * 3 + 1], f.xyz[i * 3 + 2]);
-        sx[i] = o.dx;
-        sy[i] = o.dy;
-      }
-      // faces turned towards the viewer, far to near
+    // contact shadow
+    final rim = project(full, f.anchor.dx + f.height * 0.22, f.anchor.dy, 0);
+    final rx = (rim - foot).distance;
+    canvas.drawOval(
+      Rect.fromCenter(center: foot, width: rx * 2.4, height: rx * 1.1),
+      Paint()..color = pal.shadow.withValues(alpha: pal.dark ? 0.4 : 0.2),
+    );
+    // faces turned towards the viewer, layer by layer (a dome after its roof),
+    // far to near within a layer; depends on the yaw alone, so it is kept
+    final key = (yaw * 360 / math.pi).round();
+    if (key != f.orderKey) {
       final t = f.tris.length ~/ 3;
       final keep = <int>[];
       final depth = Float64List(t);
@@ -2451,28 +2925,48 @@ class _IsoPainter extends CustomPainter {
             (f.xyz[a + 2] + f.xyz[b + 2] + f.xyz[c + 2]) * tz;
         keep.add(k);
       }
-      keep.sort((a, b) => depth[a].compareTo(depth[b]));
-      final pos = Float32List(keep.length * 6);
-      final cols = Int32List(keep.length * 3);
-      final shades = pal.dark ? f.litDark : f.lit;
-      for (var i = 0; i < keep.length; i++) {
-        final k = keep[i];
-        for (var j = 0; j < 3; j++) {
-          final v = f.tris[k * 3 + j];
-          pos[i * 6 + j * 2] = sx[v];
-          pos[i * 6 + j * 2 + 1] = sy[v];
-          cols[i * 3 + j] = shades[k];
-        }
-      }
-      // vertex colours only (BlendMode.dst keeps them, ignoring the paint)
-      canvas.drawVertices(ui.Vertices.raw(ui.VertexMode.triangles, pos, colors: cols), BlendMode.dst, Paint());
+      final layer = f.layer;
+      keep.sort((a, b) {
+        if (layer != null && layer[a] != layer[b]) return layer[a].compareTo(layer[b]);
+        return depth[a].compareTo(depth[b]);
+      });
+      f.order = keep;
+      f.orderKey = key;
     }
+    final keep = f.order;
+    final n = f.xyz.length ~/ 3;
+    final sx = Float32List(n), sy = Float32List(n);
+    for (var i = 0; i < n; i++) {
+      final o = project(full, f.xyz[i * 3], f.xyz[i * 3 + 1], f.xyz[i * 3 + 2]);
+      sx[i] = o.dx;
+      sy[i] = o.dy;
+    }
+    final pos = Float32List(keep.length * 6);
+    final cols = Int32List(keep.length * 3);
+    final shades = pal.dark ? f.litDark : f.lit;
+    for (var i = 0; i < keep.length; i++) {
+      final k = keep[i];
+      for (var j = 0; j < 3; j++) {
+        final v = f.tris[k * 3 + j];
+        pos[i * 6 + j * 2] = sx[v];
+        pos[i * 6 + j * 2 + 1] = sy[v];
+        cols[i * 3 + j] = shades[k];
+      }
+    }
+    // vertex colours only (BlendMode.dst keeps them, ignoring the paint)
+    canvas.drawVertices(ui.Vertices.raw(ui.VertexMode.triangles, pos, colors: cols), BlendMode.dst, Paint());
   }
 
   /// A statue drawn as its front elevation: the outline stood upright on the
   /// floor, turned to face the viewer, with a little depth so it still reads as
   /// a solid when the map is tilted.
-  void _outlineFigure(Canvas canvas, Matrix4 full, double yaw, _Figure f, Offset foot) {
+  void _outlineFigure(
+    Canvas canvas,
+    Matrix4 full,
+    double yaw,
+    _Figure f,
+    Offset foot,
+  ) {
     final cs = math.cos(yaw), sn = math.sin(yaw);
     // ground-plane directions: screen-right, and towards the viewer
     final rx = cs, ry = -sn, tx = sn, ty = cs;
@@ -2490,19 +2984,30 @@ class _IsoPainter extends CustomPainter {
     final base = Color(f.color).withValues(alpha: 1);
     final c = pal.dark ? _shade(base, 1.12) : base;
     // contact shadow on the floor
-    final sh = project(full, f.anchor.dx + rx * h * 0.2, f.anchor.dy + ry * h * 0.2, 0);
+    final sh = project(
+      full,
+      f.anchor.dx + rx * h * 0.2,
+      f.anchor.dy + ry * h * 0.2,
+      0,
+    );
     final r = (sh - foot).distance;
     canvas.drawOval(
       Rect.fromCenter(center: foot, width: r * 2.2, height: r * 0.9),
       Paint()..color = pal.shadow.withValues(alpha: pal.dark ? 0.45 : 0.22),
     );
-    canvas.drawPath(Path()..addPolygon(back, true), Paint()..color = _shade(c, 0.55));
+    canvas.drawPath(
+      Path()..addPolygon(back, true),
+      Paint()..color = _shade(c, 0.55),
+    );
     final side = Paint()
       ..color = _shade(c, 0.66)
       ..isAntiAlias = true;
     for (var i = 0; i < pts.length; i++) {
       final j = (i + 1) % pts.length;
-      canvas.drawPath(Path()..addPolygon([front[i], front[j], back[j], back[i]], true), side);
+      canvas.drawPath(
+        Path()..addPolygon([front[i], front[j], back[j], back[i]], true),
+        side,
+      );
     }
     final face = Path()..addPolygon(front, true);
     canvas.drawPath(face, Paint()..color = c);
@@ -2668,9 +3173,13 @@ class _IsoPainter extends CustomPainter {
           ? Color.lerp(dark, lit, k)!
           : Color.lerp(_shade(inner, 0.8), _shade(inner, 1.12), k)!;
       final fill = Paint()..color = color;
-      for (final (t0, t1) in _solidRuns(pr.gaps.isEmpty ? const [] : pr.gaps[i])) {
-        final b0 = Offset.lerp(base[i], base[j], t0)!, b1 = Offset.lerp(base[i], base[j], t1)!;
-        final u0 = Offset.lerp(top[i], top[j], t0)!, u1 = Offset.lerp(top[i], top[j], t1)!;
+      for (final (t0, t1) in _solidRuns(
+        pr.gaps.isEmpty ? const [] : pr.gaps[i],
+      )) {
+        final b0 = Offset.lerp(base[i], base[j], t0)!,
+            b1 = Offset.lerp(base[i], base[j], t1)!;
+        final u0 = Offset.lerp(top[i], top[j], t0)!,
+            u1 = Offset.lerp(top[i], top[j], t1)!;
         final quad = Path()
           ..moveTo(b0.dx, b0.dy)
           ..lineTo(b1.dx, b1.dy)
@@ -2688,7 +3197,7 @@ class _IsoPainter extends CustomPainter {
       canvas.clipPath(roof, doAntiAlias: true);
       canvas.drawPath(roof, Paint()..color = _floorColor);
       if (s._image != null) {
-        canvas.transform((full.clone()..translate(0.0, 0.0, h)).storage);
+        canvas.transform((full.clone()..translateByDouble(0.0, 0.0, h, 1)).storage);
         _art(canvas, s._px);
       }
       canvas.restore();
@@ -2702,12 +3211,13 @@ class _IsoPainter extends CustomPainter {
     }
   }
 
+  /// The route in three weights, so the next stretch is never in doubt:
+  ///   * behind the visitor: a faint line;
+  ///   * after the stop they are heading for: a light dotted line;
+  ///   * the stretch to walk now: bold, with arrows along it pointing the way.
+  /// Nothing moves once it is drawn in (one 0.9 s draw-in), so it can be read
+  /// while walking.
   void _route(Canvas canvas, Matrix4 full) {
-    final legs = s.widget.legs;
-    if (legs.isEmpty) return;
-    final prog = s.widget.routeProgress.value.clamp(0.0, 1.0);
-    final phase = s._loop.value * 30;
-
     Paint stroke(Color c, double w) => Paint()
       ..color = c
       ..style = PaintingStyle.stroke
@@ -2715,65 +3225,86 @@ class _IsoPainter extends CustomPainter {
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round;
 
-    for (var li = 0; li < legs.length && li < s._routeGeo.length; li++) {
-      final g = s._routeGeo[li];
-      final count = g.length ~/ 3;
-      if (count < 2) continue;
-      final pts = [
-        for (var i = 0; i < count; i++)
-          project(full, g[i * 3], g[i * 3 + 1], g[i * 3 + 2] + 0.5),
-      ];
-      var total = 0.0;
-      for (var i = 1; i < pts.length; i++) {
-        total += (pts[i] - pts[i - 1]).distance;
-      }
-      final drawLen = total * prog;
+    List<Offset> screen(Float64List g) => [
+      for (var i = 0; i + 2 < g.length; i += 3)
+        project(full, g[i], g[i + 1], g[i + 2] + 0.5),
+    ];
+
+    Path line(List<Offset> pts, [double upTo = double.infinity]) {
       final path = Path()..moveTo(pts[0].dx, pts[0].dy);
       var drawn = 0.0;
       for (var i = 1; i < pts.length; i++) {
         final seg = (pts[i] - pts[i - 1]).distance;
-        if (drawn + seg <= drawLen) {
+        if (drawn + seg <= upTo) {
           path.lineTo(pts[i].dx, pts[i].dy);
           drawn += seg;
         } else {
-          final f = seg == 0 ? 0.0 : (drawLen - drawn) / seg;
-          path.lineTo(
-            pts[i - 1].dx + (pts[i].dx - pts[i - 1].dx) * f,
-            pts[i - 1].dy + (pts[i].dy - pts[i - 1].dy) * f,
-          );
+          final f = seg == 0 ? 0.0 : (upTo - drawn) / seg;
+          final e = Offset.lerp(pts[i - 1], pts[i], f)!;
+          path.lineTo(e.dx, e.dy);
           break;
         }
       }
-      canvas.drawPath(
-        path,
-        stroke(pal.route.withValues(alpha: 0.20), 19),
-      ); // halo
-      canvas.drawPath(
-        path,
-        stroke(pal.routeCase.withValues(alpha: 0.9), 10),
-      ); // contrast
-      canvas.drawPath(path, stroke(pal.route, 6)); // line
+      return path;
+    }
 
-      // light flowing along the line, in the direction of travel
-      final dash = stroke(Colors.white.withValues(alpha: 0.9), 2.2);
+    for (final g in s._walkedGeo) {
+      final pts = screen(g);
+      if (pts.length < 2) continue;
+      canvas.drawPath(line(pts), stroke(pal.route.withValues(alpha: 0.28), 4));
+    }
+
+    final dot = stroke(pal.route.withValues(alpha: 0.75), 3.4);
+    for (final g in s._laterGeo) {
+      final pts = screen(g);
+      if (pts.length < 2) continue;
+      for (final m in line(pts).computeMetrics()) {
+        for (var d = 0.0; d < m.length; d += 11) {
+          final t = m.getTangentForOffset(d);
+          if (t != null) canvas.drawPoints(ui.PointMode.points, [t.position], dot);
+        }
+      }
+    }
+
+    final legs = s.widget.legs;
+    final prog = s.widget.routeProgress.value.clamp(0.0, 1.0);
+    final arrow = stroke(Colors.white.withValues(alpha: 0.95), 2.2);
+    for (var li = 0; li < legs.length && li < s._routeGeo.length; li++) {
+      final pts = screen(s._routeGeo[li]);
+      if (pts.length < 2) continue;
+      var total = 0.0;
+      for (var i = 1; i < pts.length; i++) {
+        total += (pts[i] - pts[i - 1]).distance;
+      }
+      final path = line(pts, total * prog);
+      canvas.drawPath(path, stroke(pal.routeCase.withValues(alpha: 0.9), 9.5));
+      canvas.drawPath(path, stroke(pal.route, 5.5));
+
+      // chevrons along the line, pointing the way (spaced on screen, so they
+      // stay evenly apart at any zoom; none on very short pieces)
       for (final m in path.computeMetrics()) {
-        for (var d = phase - 30; d < m.length; d += 30) {
-          final a = math.max(0.0, d), e = math.min(m.length, d + 11);
-          if (e > a) canvas.drawPath(m.extractPath(a, e), dash);
+        if (m.length < 40) continue;
+        for (var d = 28.0; d < m.length - 14; d += 56) {
+          final t = m.getTangentForOffset(d);
+          if (t == null) continue;
+          final dir = t.vector, nrm = Offset(-dir.dy, dir.dx);
+          final tip = t.position + dir * 3;
+          canvas.drawPath(
+            Path()
+              ..moveTo(tip.dx - dir.dx * 5 + nrm.dx * 3.6, tip.dy - dir.dy * 5 + nrm.dy * 3.6)
+              ..lineTo(tip.dx, tip.dy)
+              ..lineTo(tip.dx - dir.dx * 5 - nrm.dx * 3.6, tip.dy - dir.dy * 5 - nrm.dy * 3.6),
+            arrow,
+          );
         }
       }
 
-      // destination ring (only where the route really ends)
-      if (legs[li].nextMapId == null && prog >= 0.999) {
+      // the destination (only where this stretch really ends, not at a portal)
+      if (legs[li].nextMapId == null && legs[li].portal == null && prog >= 0.999) {
         final end = pts.last;
-        final pulse = s._loop.value;
-        canvas.drawCircle(
-          end,
-          9 + 14 * pulse,
-          Paint()..color = pal.rose.withValues(alpha: 0.4 * (1 - pulse)),
-        );
-        canvas.drawCircle(end, 8, Paint()..color = Colors.white);
-        canvas.drawCircle(end, 5.5, Paint()..color = pal.rose);
+        canvas.drawCircle(end, 11, Paint()..color = pal.rose.withValues(alpha: 0.25));
+        canvas.drawCircle(end, 7.5, Paint()..color = Colors.white);
+        canvas.drawCircle(end, 5, Paint()..color = pal.rose);
       }
     }
   }
@@ -2954,11 +3485,15 @@ class _PinHost extends StatelessWidget {
     required this.pinned,
     required this.target,
     required this.onTap,
+    this.stop,
+    this.quiet = false,
   });
   final MapPlace place;
   final bool selected;
   final bool pinned;
   final bool target;
+  final PinStop? stop;
+  final bool quiet;
   final VoidCallback onTap;
 
   @override
@@ -2974,12 +3509,17 @@ class _PinHost extends StatelessWidget {
       ),
       child: Align(
         alignment: Alignment.bottomCenter,
-        child: MapPin(
-          place: place,
-          isSelected: selected,
-          isPinned: pinned,
-          isTarget: target,
-          onTap: onTap,
+        child: AnimatedOpacity(
+          opacity: quiet ? 0.5 : 1,
+          duration: const Duration(milliseconds: 220),
+          child: MapPin(
+            place: place,
+            isSelected: selected,
+            isPinned: pinned,
+            isTarget: target,
+            stop: stop,
+            onTap: onTap,
+          ),
         ),
       ),
     ),
@@ -3035,6 +3575,31 @@ class _YouAreHere extends StatelessWidget {
   );
 }
 
+/// The spot where the instruction being read happens: a white disc with the
+/// instruction's icon, ringed in the route colour. Still, so it reads at a glance.
+class _StepMarker extends StatelessWidget {
+  const _StepMarker({required this.pal, required this.icon});
+  final GemPalette pal;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    decoration: BoxDecoration(
+      color: Colors.white,
+      shape: BoxShape.circle,
+      border: Border.all(color: pal.routeCase, width: 3),
+      boxShadow: [
+        BoxShadow(
+          color: Colors.black.withValues(alpha: 0.35),
+          blurRadius: 6,
+          offset: const Offset(0, 2),
+        ),
+      ],
+    ),
+    child: Icon(icon, size: 20, color: pal.routeCase),
+  );
+}
+
 /// "Continue on …": where the route leaves this map.
 class _ExitChip extends StatelessWidget {
   const _ExitChip({
@@ -3073,7 +3638,10 @@ class _ExitChip extends StatelessWidget {
             children: [
               Container(
                 padding: const EdgeInsets.all(5),
-                decoration: BoxDecoration(color: pal.onAccent.withValues(alpha: 0.18), shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                  color: pal.onAccent.withValues(alpha: 0.18),
+                  shape: BoxShape.circle,
+                ),
                 child: Icon(icon, size: 18, color: pal.onAccent),
               ),
               const SizedBox(width: 9),
@@ -3086,14 +3654,25 @@ class _ExitChip extends StatelessWidget {
                       label,
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontFamily: 'Arial', fontSize: 13, height: 1.15, fontWeight: FontWeight.w800, color: pal.onAccent),
+                      style: TextStyle(
+                        fontFamily: 'Arial',
+                        fontSize: 13,
+                        height: 1.15,
+                        fontWeight: FontWeight.w800,
+                        color: pal.onAccent,
+                      ),
                     ),
                     if (detail != null)
                       Text(
                         detail!,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(fontFamily: 'Arial', fontSize: 11.5, fontWeight: FontWeight.w600, color: pal.onAccent.withValues(alpha: 0.85)),
+                        style: TextStyle(
+                          fontFamily: 'Arial',
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                          color: pal.onAccent.withValues(alpha: 0.85),
+                        ),
                       ),
                   ],
                 ),
@@ -3101,7 +3680,7 @@ class _ExitChip extends StatelessWidget {
               if (onTap != null) ...[
                 const SizedBox(width: 4),
                 Icon(
-                  Directionality.of(context) == TextDirection.rtl ? Icons.chevron_left : Icons.chevron_right,
+                  Icons.chevron_right, // mirrors itself in right-to-left text
                   size: 20,
                   color: pal.onAccent,
                 ),

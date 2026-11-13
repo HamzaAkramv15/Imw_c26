@@ -20,6 +20,7 @@ class TourSheet extends StatefulWidget {
     required this.onChangeOrigin,
     required this.onStart,
     required this.onRemove,
+    required this.onSaveAsTrip,
   });
 
   final MuseumGraph graph;
@@ -30,6 +31,9 @@ class TourSheet extends StatefulWidget {
   final VoidCallback onChangeOrigin;
   final void Function(List<String> order) onStart;
   final void Function(String id) onRemove;
+
+  /// Turns the pins, in their current order, into a named Rostau trip.
+  final void Function(List<String> ids) onSaveAsTrip;
 
   @override
   State<TourSheet> createState() => _TourSheetState();
@@ -109,8 +113,8 @@ class _TourSheetState extends State<TourSheet> {
                         if (pv != null) ...[
                           const SizedBox(height: 4),
                           Text(
-                            '${S.t('stops', n: pv.order.length)} · ${S.distance(pv.route.meters)} · ${S.minutes(pv.route.walkTime)}',
-                            style: TextStyle(fontFamily: 'Arial', fontSize: 13, color: p.muted, fontWeight: FontWeight.w600),
+                            '${S.count('stops', pv.order.length)} · ${S.distance(pv.route.meters)} · ${S.minutes(pv.route.walkTime)}',
+                            style: TextStyle(fontFamily: 'Arial', fontSize: 14, color: p.muted, fontWeight: FontWeight.w600),
                           ),
                         ],
                       ],
@@ -129,7 +133,7 @@ class _TourSheetState extends State<TourSheet> {
             if (pv != null && pv.skipped.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 22),
-                child: Text(S.t('skipped', x: pv.skipped.map(S.placeId).join('، ')), style: TextStyle(fontFamily: 'Arial', fontSize: 12, color: p.dark ? const Color(0xffff8a80) : Colors.redAccent)),
+                child: Text(S.t('skipped', x: S.list(pv.skipped.map(S.placeId))), style: TextStyle(fontFamily: 'Arial', fontSize: 12, color: p.rose)),
               ),
             Divider(height: 1, color: p.line),
             Expanded(
@@ -139,8 +143,7 @@ class _TourSheetState extends State<TourSheet> {
                       scrollController: scroll,
                       padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
                       itemCount: _ids.length,
-                      onReorder: (a, b) => setState(() {
-                        if (b > a) b -= 1;
+                      onReorderItem: (a, b) => setState(() {
                         _ids.insert(b, _ids.removeAt(a));
                         _recompute();
                       }),
@@ -150,7 +153,7 @@ class _TourSheetState extends State<TourSheet> {
                         return ListTile(
                           key: ValueKey(id),
                           leading: place == null ? const Icon(Icons.place) : PlaceBadge(place: place, size: 36),
-                          title: Text(S.placeId(id), style: TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w700, fontSize: 15, color: p.ink)),
+                          title: Text(S.placeId(id), style: TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w700, fontSize: 16, color: p.ink)),
                           subtitle: place == null ? null : Text(S.category(place.category), style: TextStyle(fontFamily: 'Arial', fontSize: 12, color: p.muted)),
                           trailing: IconButton(
                             icon: const Icon(Icons.close, size: 20),
@@ -166,14 +169,28 @@ class _TourSheetState extends State<TourSheet> {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(18, 6, 18, 18),
-              child: SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: _ids.isEmpty ? null : () => widget.onStart(_ids),
-                  icon: const Icon(Icons.route),
-                  label: Text(S.t('start_tour')),
-                  style: gemFilled(context),
-                ),
+              child: Row(
+                children: [
+                  if (_ids.isNotEmpty) ...[
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: () => widget.onSaveAsTrip(List.of(_ids)),
+                        icon: const Icon(Icons.bookmark_add_outlined, size: 18),
+                        label: FittedBox(fit: BoxFit.scaleDown, child: Text(S.t('save_as_trip'))),
+                        style: gemOutlined(context),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: FilledButton.icon(
+                      onPressed: _ids.isEmpty ? null : () => widget.onStart(_ids),
+                      icon: const Icon(Icons.route),
+                      label: FittedBox(fit: BoxFit.scaleDown, child: Text(S.t('start_tour'))),
+                      style: gemFilled(context),
+                    ),
+                  ),
+                ],
               ),
             ),
           ],

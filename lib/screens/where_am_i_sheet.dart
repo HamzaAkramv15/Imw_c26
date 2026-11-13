@@ -41,7 +41,7 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
     // typing needs room: grow the sheet as soon as the field is focused
     _focus.addListener(() {
       if (_focus.hasFocus && _sheet.isAttached) {
-        _sheet.animateTo(.94, duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
+        _sheet.animateTo(1, duration: const Duration(milliseconds: 220), curve: Curves.easeOutCubic);
       }
     });
   }
@@ -61,7 +61,7 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
     final typing = q.trim().isNotEmpty;
     final groups = typing ? SearchEngine.search(_all, q) : const <({String key, List<SearchEntry> items})>[];
     final results = [for (final g in groups) ...g.items].take(30).toList();
-    final base = TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w700, fontSize: 15, color: p.ink);
+    final base = TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w700, fontSize: 16, color: p.ink);
     final hit = base.copyWith(color: p.gold);
     final keyboard = MediaQuery.viewInsetsOf(context).bottom;
 
@@ -70,12 +70,12 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
       padding: EdgeInsets.only(bottom: keyboard),
       child: DraggableScrollableSheet(
         controller: _sheet,
-        initialChildSize: .62,
+        initialChildSize: .56,
         minChildSize: .4,
-        maxChildSize: .94,
+        maxChildSize: 1,
         expand: false,
         snap: true,
-        snapSizes: const [.62, .94],
+        snapSizes: const [.56, 1],
         builder: (context, scroll) => GemSheetFrame(
           expand: true,
           child: ListView(
@@ -99,7 +99,7 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
                       children: [
                         Text(S.t('where_now'), style: TextStyle(fontSize: 22, height: 1.15, fontWeight: FontWeight.w700, color: p.ink)),
                         const SizedBox(height: 3),
-                        Text(S.t('where_hint'), style: TextStyle(fontFamily: 'Arial', fontSize: 12.5, height: 1.35, color: p.muted)),
+                        Text(S.t('where_hint'), style: TextStyle(fontFamily: 'Arial', fontSize: 12, height: 1.35, color: p.muted)),
                       ],
                     ),
                   ),
@@ -155,7 +155,7 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
               ] else if (results.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 28),
-                  child: Center(child: Text(S.t('no_results'), style: TextStyle(fontFamily: 'Arial', fontSize: 15, color: p.muted))),
+                  child: Center(child: Text(S.t('no_results'), style: TextStyle(fontFamily: 'Arial', fontSize: 16, color: p.muted))),
                 )
               else
                 for (final e in results) _resultTile(p, e, q, base, hit),
@@ -166,13 +166,15 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
     );
   }
 
-  /// Three equal cards that always fit the width, whatever the language.
+  /// Three equal cards that always fit the width, whatever the language;
+  /// one under the other when the text is too large for three across.
   Widget _entranceGrid(GemPalette p) {
     final places = [for (final id in _entrances) if (placeById(id) != null) placeById(id)!];
     return LayoutBuilder(
       builder: (context, c) {
         const gap = 10.0;
-        final w = (c.maxWidth - gap * (places.length - 1)) / places.length;
+        final third = (c.maxWidth - gap * (places.length - 1)) / places.length;
+        final w = third < MediaQuery.textScalerOf(context).scale(100) ? c.maxWidth : third;
         return Wrap(
           spacing: gap,
           runSpacing: gap,
@@ -204,11 +206,11 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
               const SizedBox(height: 10),
               // two lines reserved, so the three cards are always the same height
               SizedBox(
-                height: 34,
-                child: Text(S.place(pl), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 13, height: 1.2, color: p.ink)),
+                height: MediaQuery.textScalerOf(context).scale(14) * 1.2 * 2,
+                child: Text(S.place(pl), maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 14, height: 1.2, color: p.ink)),
               ),
               const SizedBox(height: 4),
-              Text(S.mapShort(allMaps[mapIdOfPlace(pl.id)]!), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'Arial', fontSize: 11.5, color: p.muted)),
+              Text(S.mapShort(allMaps[mapIdOfPlace(pl.id)]!), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'Arial', fontSize: 12, color: p.muted)),
             ],
           ),
         ),
@@ -235,7 +237,6 @@ class _WhereAmISheetState extends State<WhereAmISheet> {
               ],
             ),
           ),
-          Icon(Icons.north_west, size: 16, color: p.line),
         ],
       ),
     ),

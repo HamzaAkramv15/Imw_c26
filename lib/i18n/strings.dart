@@ -37,6 +37,24 @@ class S {
     return s;
   }
 
+  /// "1 stop" / "3 stops" ([key] has a `{key}_one` row for the singular).
+  static String count(String key, int n) {
+    if (lang == AppLang.ar) {
+      // Arabic has a dual, and plural forms for 3–10; the table row holds the
+      // form used from 11 on ("11 محطة"), and _one the singular
+      final forms = _arCounts[key];
+      if (forms != null && n == 2) return forms.$1;
+      if (forms != null && n >= 3 && n <= 10) return forms.$2.replaceAll('{n}', '$n');
+    }
+    return n == 1 && kUi.containsKey('${key}_one') ? t('${key}_one') : t(key, n: n);
+  }
+
+  /// Arabic counted nouns: (dual, 3–10).
+  static const Map<String, (String, String)> _arCounts = {
+    'stops': ('محطتان', '{n} محطات'),
+    'results_n': ('نتيجتان', '{n} نتائج'),
+  };
+
   // ── names ──────────────────────────────────────────────────────
   /// A place, hall or label name in [l] (search needs every language at once).
   static String nameIn(String en, AppLang l) {
@@ -148,6 +166,9 @@ class S {
     return s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
   }
 
+  /// Russian floors in the locative (the ground floor is the "first").
+  static const _ruFloorIn = ['первом этаже', 'втором этаже', 'третьем этаже', 'четвёртом этаже'];
+
   // ── directions ─────────────────────────────────────────────────
   static String step(RouteStep s) {
     final near = s.targetId == null ? null : placeId(s.targetId!);
@@ -166,15 +187,17 @@ class S {
         return t('step_exit', x: m == null ? '' : mapTitle(m));
       case StepKind.enterRoom:
         return t('step_room', x: s.targetId != null ? placeId(s.targetId!) : regionId(s.regionId ?? ''));
-      case StepKind.door:
-        return t('step_door');
-      case StepKind.passage:
-        return t('step_passage');
+      case StepKind.door || StepKind.passage:
+        // through an opening, and into the room behind it when that is named
+        final into = s.targetId != null ? placeId(s.targetId!) : (s.regionId != null ? regionId(s.regionId!) : null);
+        final key = s.kind == StepKind.door ? 'step_door' : 'step_passage';
+        return into == null ? t(key) : t('${key}_into', x: into);
       case StepKind.steps:
         final into = s.targetId != null ? placeId(s.targetId!) : (s.regionId != null ? regionId(s.regionId!) : null);
         return into == null ? t('step_steps') : t('step_steps_into', x: into);
       case StepKind.levelReached:
-        return t('step_now_on', x: floorName(s.floor));
+        // Russian needs the floor in the locative here ("на втором этаже")
+        return t('step_now_on', x: lang == AppLang.ru ? _ruFloorIn[s.floor.clamp(0, 3)] : floorName(s.floor));
       case StepKind.stairs:
         return t(s.down ? 'step_stairs_down' : 'step_stairs', x: floorName(s.floor));
       case StepKind.lift:

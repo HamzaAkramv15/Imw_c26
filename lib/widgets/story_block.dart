@@ -26,10 +26,10 @@ class StoryBlock extends StatelessWidget {
           Text(S.t('story_in_english'), style: TextStyle(fontFamily: 'Arial', fontSize: 12, fontWeight: FontWeight.w700, color: p.muted)),
           const SizedBox(height: 6),
         ],
-        Text(hook, style: TextStyle(fontSize: 21, height: 1.25, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.gold)),
+        Text(hook, style: TextStyle(fontSize: 22, height: 1.25, fontStyle: FontStyle.italic, fontWeight: FontWeight.w700, color: p.gold)),
         for (final para in body.split('\n\n')) ...[
           const SizedBox(height: 12),
-          Text(para.trim(), style: TextStyle(fontFamily: 'Arial', fontSize: 15, height: 1.6, color: p.ink)),
+          Text(para.trim(), style: TextStyle(fontFamily: 'Arial', fontSize: 16, height: 1.6, color: p.ink)),
         ],
         if (closing.isNotEmpty) ...[
           const SizedBox(height: 18),

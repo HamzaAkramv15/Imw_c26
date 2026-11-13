@@ -13,6 +13,13 @@ class Mesh:
     def __init__(self):
         self.v = []      # (u, w, v)
         self.t = []      # (a, b, c, argb)
+        self.layers = []  # triangle index where each draw layer after the first starts
+
+    def next_layer(self):
+        """What is added from now on stands entirely above what came before
+        (a dome on a roof): the canvas paints it afterwards, whatever the view,
+        instead of sorting its triangles in with the lower part's."""
+        self.layers.append(len(self.t))
 
     # ── low level ─────────────────────────────────────────────────────────────
     def add(self, verts, tris, color, centre=None):
@@ -40,6 +47,7 @@ class Mesh:
         m = Mesh()
         m.v = [f(p) for p in self.v]
         m.t = list(self.t)
+        m.layers = list(self.layers)
         return m
 
     # ── parts ─────────────────────────────────────────────────────────────────

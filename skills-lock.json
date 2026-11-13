@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "skills": {
+    "flutter-test-android-visually": {
+      "source": "lukas-hinterleitner/visual-app-skills",
+      "sourceType": "github",
+      "skillPath": "skills/flutter-test-android-visually/SKILL.md",
+      "computedHash": "e47add707282b31cdf698f7a074c6ed90d72a7d51878d70f840e0c0f7c348000"
+    }
+  }
+}

@@ -66,7 +66,7 @@ class GemEyebrow extends StatelessWidget {
   Widget build(BuildContext context) => Text(
     text.toUpperCase(),
     // scripts without capitals get a slightly larger size instead of tracking
-    style: TextStyle(fontFamily: 'Arial', fontSize: S.tracking(1) == 0 ? 12.5 : 11, letterSpacing: S.tracking(1.6), color: context.pal.gold, fontWeight: FontWeight.w700),
+    style: TextStyle(fontFamily: 'Arial', fontSize: 12, letterSpacing: S.tracking(1.6), color: context.pal.gold, fontWeight: FontWeight.w700),
   );
 }
 
@@ -76,7 +76,7 @@ ButtonStyle gemFilled(BuildContext context, {Color? color}) {
     backgroundColor: color ?? p.accent,
     foregroundColor: p.onAccent,
     padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 15),
-    textStyle: const TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 15),
+    textStyle: const TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 16),
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
   );
 }
@@ -87,7 +87,7 @@ ButtonStyle gemOutlined(BuildContext context) {
     foregroundColor: p.accent,
     side: BorderSide(color: p.accent.withValues(alpha: .7), width: 1.4),
     padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-    textStyle: const TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 15),
+    textStyle: const TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 16),
     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
   );
 }
@@ -193,20 +193,26 @@ class RoundAction extends StatelessWidget {
       ),
     );
     if (badge <= 0) return button;
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        button,
-        PositionedDirectional(
-          top: -3,
-          end: -3,
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-            decoration: BoxDecoration(color: p.gold, borderRadius: BorderRadius.circular(10), border: Border.all(color: p.bg, width: 1.5)),
-            child: Text('$badge', style: TextStyle(fontFamily: 'Arial', fontSize: 10.5, fontWeight: FontWeight.w800, color: p.dark ? Colors.black : Colors.white)),
+    // the count is read out with the button ("My tour, 3"), not as a stray "3"
+    return Semantics(
+      value: '$badge',
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          button,
+          PositionedDirectional(
+            top: -3,
+            end: -3,
+            child: ExcludeSemantics(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: p.gold, borderRadius: BorderRadius.circular(10), border: Border.all(color: p.bg, width: 1.5)),
+                child: Text('$badge', style: TextStyle(fontFamily: 'Arial', fontSize: 12, height: 1.1, fontWeight: FontWeight.w800, color: p.dark ? Colors.black : Colors.white)),
+              ),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -231,22 +237,17 @@ class SearchPill extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           borderRadius: BorderRadius.circular(26),
-          child: SizedBox(
-            height: 46,
+          // one icon for one action; grows with the visitor's text size
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 46),
             child: Row(
               children: [
-                const SizedBox(width: 6),
-                Container(
-                  width: 34,
-                  height: 34,
-                  decoration: BoxDecoration(shape: BoxShape.circle, color: p.dark ? p.surfaceHi : GemColors.teal, border: Border.all(color: p.gold, width: 1.4)),
-                  child: Icon(Icons.remove_red_eye_outlined, color: p.gold, size: 18),
-                ),
+                const SizedBox(width: 14),
+                Icon(Icons.search, color: p.accent, size: 22),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text(S.t('search_ph'), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'Arial', fontSize: 15, color: p.muted, fontWeight: FontWeight.w600)),
+                  child: Text(S.t('search_ph'), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'Arial', fontSize: 16, color: p.muted, fontWeight: FontWeight.w600)),
                 ),
-                Icon(Icons.search, color: p.ink, size: 22),
                 const SizedBox(width: 14),
               ],
             ),
@@ -258,6 +259,10 @@ class SearchPill extends StatelessWidget {
 }
 
 // ── category chips: icon + label, scroll sideways ─────────────────
+/// Height of a one-line chip: 40 at the default text size, taller as the
+/// visitor's text size grows (a horizontal list needs a fixed height).
+double gemChipHeight(BuildContext context) => MediaQuery.textScalerOf(context).scale(14) + 26;
+
 class CategoryRow extends StatelessWidget {
   const CategoryRow({super.key, required this.categories, required this.selected, required this.onSelect});
   final List<PlaceCategory> categories;
@@ -271,27 +276,31 @@ class CategoryRow extends StatelessWidget {
       final fg = on ? p.onAccent : p.ink;
       return Padding(
         padding: const EdgeInsetsDirectional.only(end: 8),
-        child: Container(
-          decoration: BoxDecoration(
-            color: on ? p.accent : p.surface,
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: on ? p.accent : p.line.withValues(alpha: .8)),
-            boxShadow: on ? gemShadow(p, lift: .6) : gemShadow(p, lift: .5),
-          ),
-          child: Material(
-            type: MaterialType.transparency,
-            child: InkWell(
-              onTap: tap,
+        child: Semantics(
+          button: true,
+          selected: on,
+          child: Container(
+            decoration: BoxDecoration(
+              color: on ? p.accent : p.surface,
               borderRadius: BorderRadius.circular(20),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 13),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    icon(on ? p.onAccent : p.gold),
-                    const SizedBox(width: 7),
-                    Text(label, style: TextStyle(fontFamily: 'Arial', fontSize: 13, fontWeight: FontWeight.w700, color: fg)),
-                  ],
+              border: Border.all(color: on ? p.accent : p.line.withValues(alpha: .8)),
+              boxShadow: on ? gemShadow(p, lift: .6) : gemShadow(p, lift: .5),
+            ),
+            child: Material(
+              type: MaterialType.transparency,
+              child: InkWell(
+                onTap: tap,
+                borderRadius: BorderRadius.circular(20),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 13),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      icon(on ? p.onAccent : p.gold),
+                      const SizedBox(width: 7),
+                      Text(label, style: TextStyle(fontFamily: 'Arial', fontSize: 14, fontWeight: FontWeight.w700, color: fg)),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -301,7 +310,7 @@ class CategoryRow extends StatelessWidget {
     }
 
     return SizedBox(
-      height: 40,
+      height: gemChipHeight(context),
       child: ListView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 12),

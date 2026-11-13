@@ -15,7 +15,7 @@ import '../widgets/story_block.dart';
 /// photo (or badge) + eyebrow + title + location chips, an ornamental divider,
 /// the story hook with a short preview and a "Discover its story" door to the
 /// full text, then Start route / Pin / I'm here in one row.
-class PlaceDetailSheet extends StatelessWidget {
+class PlaceDetailSheet extends StatefulWidget {
   const PlaceDetailSheet({
     super.key,
     required this.place,
@@ -26,7 +26,11 @@ class PlaceDetailSheet extends StatelessWidget {
     required this.onRoute,
     required this.onSetOrigin,
     required this.onOpenLinkedMap,
+    this.walk,
   });
+
+  /// The walk there from where the visitor is ("3 min · 220 m"), when known.
+  final String? walk;
 
   final MapPlace place;
   final bool isPinned;
@@ -38,8 +42,24 @@ class PlaceDetailSheet extends StatelessWidget {
   final void Function(String mapId)? onOpenLinkedMap;
 
   @override
+  State<PlaceDetailSheet> createState() => _PlaceDetailSheetState();
+}
+
+class _PlaceDetailSheetState extends State<PlaceDetailSheet> {
+  /// Pin flips in place: the sheet stays open and keeps its scroll position.
+  late bool _pinned = widget.isPinned;
+
+  void _togglePin() {
+    widget.onPin();
+    setState(() => _pinned = !_pinned);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final p = context.pal;
+    final place = widget.place;
+    final isRouteTarget = widget.isRouteTarget;
+    final isOrigin = widget.isOrigin;
     final image = kPlaceImage[place.id];
     final floor = kPlaceFloor[place.id];
     final desc = S.description(place);
@@ -81,7 +101,7 @@ class PlaceDetailSheet extends StatelessWidget {
                           eyebrow,
                           style: TextStyle(
                             fontFamily: 'Arial',
-                            fontSize: 11,
+                            fontSize: 12,
                             letterSpacing: S.tracking(1.8),
                             color: p.gold,
                             fontWeight: FontWeight.w700,
@@ -93,7 +113,7 @@ class PlaceDetailSheet extends StatelessWidget {
                           maxLines: 3,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 23,
+                            fontSize: 22,
                             height: 1.15,
                             color: p.ink,
                             fontWeight: FontWeight.w700,
@@ -119,7 +139,7 @@ class PlaceDetailSheet extends StatelessWidget {
                 Text(
                   story.hookIn(S.lang),
                   style: TextStyle(
-                    fontSize: 21,
+                    fontSize: 22,
                     height: 1.25,
                     fontStyle: FontStyle.italic,
                     fontWeight: FontWeight.w700,
@@ -138,7 +158,7 @@ class PlaceDetailSheet extends StatelessWidget {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontFamily: 'Arial',
-                    fontSize: 14.5,
+                    fontSize: 14,
                     height: 1.5,
                     color: p.ink,
                   ),
@@ -150,18 +170,33 @@ class PlaceDetailSheet extends StatelessWidget {
                   desc,
                   style: TextStyle(
                     fontFamily: 'Arial',
-                    fontSize: 15,
+                    fontSize: 16,
                     height: 1.45,
                     color: p.ink,
                   ),
                 ),
               const SizedBox(height: 16),
+              if (widget.walk != null && !isOrigin) ...[
+                Row(
+                  children: [
+                    Icon(Icons.directions_walk, size: 18, color: p.muted),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        S.t('from_you', x: widget.walk),
+                        style: TextStyle(fontFamily: 'Arial', fontSize: 14, fontWeight: FontWeight.w700, color: p.muted),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 10),
+              ],
               Row(
                 children: [
                   Expanded(
                     flex: 5,
                     child: FilledButton.icon(
-                      onPressed: onRoute,
+                      onPressed: widget.onRoute,
                       icon: const Icon(Icons.near_me_rounded, size: 18),
                       label: FittedBox(
                         fit: BoxFit.scaleDown,
@@ -176,14 +211,20 @@ class PlaceDetailSheet extends StatelessWidget {
                   Expanded(
                     flex: 3,
                     child: OutlinedButton.icon(
-                      onPressed: onPin,
-                      icon: Icon(
-                        isPinned ? Icons.bookmark : Icons.bookmark_border,
-                        size: 18,
+                      onPressed: _togglePin,
+                      icon: AnimatedSwitcher(
+                        duration: const Duration(milliseconds: 180),
+                        transitionBuilder: (child, anim) =>
+                            ScaleTransition(scale: anim, child: child),
+                        child: Icon(
+                          _pinned ? Icons.bookmark : Icons.bookmark_border,
+                          key: ValueKey(_pinned),
+                          size: 18,
+                        ),
                       ),
                       label: FittedBox(
                         fit: BoxFit.scaleDown,
-                        child: Text(isPinned ? S.t('pinned') : S.t('pin')),
+                        child: Text(_pinned ? S.t('pinned') : S.t('pin')),
                       ),
                       style: gemOutlined(context).copyWith(
                         padding: const WidgetStatePropertyAll(
@@ -196,7 +237,7 @@ class PlaceDetailSheet extends StatelessWidget {
                   Expanded(
                     flex: 4,
                     child: OutlinedButton.icon(
-                      onPressed: onSetOrigin,
+                      onPressed: widget.onSetOrigin,
                       icon: Icon(
                         isOrigin
                             ? Icons.my_location
@@ -223,7 +264,7 @@ class PlaceDetailSheet extends StatelessWidget {
                 SizedBox(
                   width: double.infinity,
                   child: TextButton.icon(
-                    onPressed: () => onOpenLinkedMap?.call(place.linkedMapId!),
+                    onPressed: () => widget.onOpenLinkedMap?.call(place.linkedMapId!),
                     icon: Icon(Icons.map_outlined, size: 18, color: p.accent),
                     label: Text(
                       S.t('open_plan'),
@@ -410,18 +451,14 @@ class _StoryDoor extends StatelessWidget {
                 child: Text(
                   S.t('discover_story'),
                   style: TextStyle(
-                    fontSize: 16.5,
+                    fontSize: 16,
                     fontWeight: FontWeight.w700,
                     color: p.accent,
                   ),
                 ),
               ),
-              Icon(
-                Directionality.of(context) == TextDirection.rtl
-                    ? Icons.chevron_left
-                    : Icons.chevron_right,
-                color: p.ink,
-              ),
+              // mirrors itself in right-to-left languages
+              Icon(Icons.chevron_right, color: p.ink),
             ],
           ),
         ),

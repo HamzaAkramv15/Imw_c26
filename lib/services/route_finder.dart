@@ -277,7 +277,13 @@ class MuseumGraph {
   static const double _staircasePenalty = 2.5;
   static const double _liftWaitSeconds = 40;
   static const double _turnAngle = 0.6; // radians, ~35°
-  static const double _minTurnSegment = 12; // map units
+
+  /// A turn is judged on the walk this far (m) before and after the bend, so
+  /// a jog round a case or a plinth is not mistaken for a change of direction.
+  static const double _turnWindow = 7;
+
+  /// Turn instructions at least this far apart (m).
+  static const double _turnGap = 12;
 
   final Map<String, _Node> _nodes = {};
   final Map<String, List<_Edge>> _adj = {};
@@ -369,12 +375,13 @@ class MuseumGraph {
     return best;
   }
 
-  String? _nearPlace(String mapId, Offset pos, double maxUnits) {
+  String? _nearPlace(String mapId, Offset pos, double maxUnits, {Set<String> skip = const {}}) {
     final m = maps[mapId]!;
     String? best;
     var bd = maxUnits;
     for (final p in m.places) {
       if (p.category == PlaceCategory.facility || p.category == PlaceCategory.parking) continue;
+      if (skip.contains(p.id)) continue; // "turn right near" where you start or end says nothing
       if (placeFloors.containsKey(p.id)) continue; // not on this level
       final d = _unitDist(m, p.position, pos);
       if (d < bd) {
@@ -421,6 +428,40 @@ class MuseumGraph {
   }
 
   // ── single route ───────────────────────────────────────────────
+  /// Walking metres from [from] to every place it can reach, along the way
+  /// the router would take (cheapest by its costs, measured in metres), by
+  /// place id (redirected pins included). One search for all of them: what
+  /// lists "nearest first" use.
+  Map<String, double> metersFrom(String from, {bool avoidStairs = false}) {
+    if (!_nodes.containsKey(from)) return const {};
+    final r = _dijkstra(from, stepFree: avoidStairs);
+    final m = <String, double>{from: 0};
+    double of(String id) {
+      final chain = <String>[];
+      var u = id;
+      while (!m.containsKey(u)) {
+        chain.add(u);
+        final p = r.prev[u];
+        if (p == null) return double.infinity;
+        u = p;
+      }
+      var d = m[u]!;
+      for (final v in chain.reversed) {
+        final p = r.prev[v]!;
+        d += _edge(p, v, avoidStairs)?.meters ?? 0;
+        m[v] = d;
+      }
+      return d;
+    }
+
+    final out = <String, double>{};
+    for (final id in _places.keys) {
+      final d = of(redirects[id] ?? id);
+      if (d.isFinite) out[id] = d;
+    }
+    return out;
+  }
+
   RouteResult? find(String from, String to, {bool avoidStairs = false}) {
     to = redirects[to] ?? to;
     from = redirects[from] ?? from;
@@ -463,8 +504,11 @@ class MuseumGraph {
       0,
     ));
 
+    // places never used as a landmark: the start and the destination
+    final ends = {ids.first, ids.last, for (final e in redirects.entries) if (e.value == ids.first || e.value == ids.last) e.key};
+
     void closeLeg({String? next, Portal? portal, RouteStep? exit}) {
-      _turns(curMap, legPts, legMeters, legStart, raw);
+      _turns(curMap, legPts, legMeters, legStart, raw, ends);
       legs.add(RouteLeg(curMap, List.of(legPts), List.of(legIds), nextMapId: next, portal: portal, exitStep: exit));
     }
 
@@ -571,6 +615,7 @@ class MuseumGraph {
         return c != 0 ? c : x.compareTo(y);
       });
     raw.setAll(0, [for (final i in order) raw[i]]);
+    _tidy(raw);
     final steps = <RouteStep>[
       for (var i = 0; i < raw.length; i++) raw[i].$1.withMeters(i + 1 < raw.length ? raw[i + 1].$2 - raw[i].$2 : 0),
     ];
@@ -594,25 +639,83 @@ class MuseumGraph {
     return (ax * py - ay * px).sign;
   }
 
-  /// Turn instructions along one leg: at every bend sharper than [_turnAngle]
-  /// whose two sides are long enough to be a real change of direction.
-  void _turns(String mapId, List<Offset> pts, List<double> cum, double start, List<(RouteStep, double)> out) {
+  /// Turn instructions along one leg: where the walk's heading, taken over
+  /// [_turnWindow] metres either side of a bend, changes by more than
+  /// [_turnAngle], at most one every [_turnGap] metres. Landmarks are the
+  /// nearest place other than the route's own ends ([skip]).
+  void _turns(String mapId, List<Offset> pts, List<double> cum, double start, List<(RouteStep, double)> out, Set<String> skip) {
     final m = maps[mapId]!;
+    final w = m.imageSize.width, h = m.imageSize.height;
+    // the point [d] metres along the leg (map px)
+    Offset at(double d) {
+      if (d <= 0) return Offset(pts.first.dx * w, pts.first.dy * h);
+      for (var i = 1; i < pts.length; i++) {
+        if (cum[i] >= d) {
+          final span = cum[i] - cum[i - 1];
+          final t = span <= 0 ? 0.0 : (d - cum[i - 1]) / span;
+          final p = Offset.lerp(pts[i - 1], pts[i], t)!;
+          return Offset(p.dx * w, p.dy * h);
+        }
+      }
+      return Offset(pts.last.dx * w, pts.last.dy * h);
+    }
+
     var lastAt = -double.infinity;
     for (var i = 1; i + 1 < pts.length; i++) {
-      final va = Offset((pts[i].dx - pts[i - 1].dx) * m.imageSize.width, (pts[i].dy - pts[i - 1].dy) * m.imageSize.height);
-      final vb = Offset((pts[i + 1].dx - pts[i].dx) * m.imageSize.width, (pts[i + 1].dy - pts[i].dy) * m.imageSize.height);
-      if (va.distance < _minTurnSegment || vb.distance < _minTurnSegment) continue;
+      final d = cum[i];
+      if (d < 2 || cum.last - d < 2) continue; // not at the very ends of the leg
+      final p = Offset(pts[i].dx * w, pts[i].dy * h);
+      final va = p - at(d - _turnWindow), vb = at(d + _turnWindow) - p;
+      if (va.distance < 1 || vb.distance < 1) continue;
       final cross = va.dx * vb.dy - va.dy * vb.dx; // y points down → positive = turning right
       final dot = va.dx * vb.dx + va.dy * vb.dy;
       final angle = math.atan2(cross, dot);
-      final at = start + cum[i];
-      if (angle.abs() < _turnAngle || at - lastAt < 8) continue;
-      lastAt = at;
+      final where = start + d;
+      if (angle.abs() < _turnAngle || where - lastAt < _turnGap) continue;
+      lastAt = where;
       out.add((
-        RouteStep(angle > 0 ? StepKind.right : StepKind.left, mapId: mapId, position: pts[i], targetId: _nearPlace(mapId, pts[i], 80)),
-        at,
+        RouteStep(angle > 0 ? StepKind.right : StepKind.left, mapId: mapId, position: pts[i], targetId: _nearPlace(mapId, pts[i], 80, skip: skip)),
+        where,
       ));
+    }
+  }
+
+  /// Fewer, clearer instructions (steps in walking order, with the metres at
+  /// which each happens):
+  ///   * a doorway right before entering a room: one instruction, "Go through
+  ///     the doorway into the Glass Hall";
+  ///   * a bare turn within a few metres of a doorway, a room, stairs, a lift
+  ///     or the arrival: that instruction is where the visitor looks;
+  ///   * the same turn at the same landmark twice in a row, close together.
+  static void _tidy(List<(RouteStep, double)> raw) {
+    const near = 6.0;
+    bool isTurn(StepKind k) => k == StepKind.left || k == StepKind.right;
+    bool isPlace(StepKind k) => !isTurn(k) && k != StepKind.start && k != StepKind.levelReached;
+    for (var i = raw.length - 1; i >= 0; i--) {
+      final (st, t) = raw[i];
+      if (!isTurn(st.kind) || st.targetId != null) continue;
+      final close = (i > 0 && isPlace(raw[i - 1].$1.kind) && t - raw[i - 1].$2 < near) ||
+          (i + 1 < raw.length && isPlace(raw[i + 1].$1.kind) && raw[i + 1].$2 - t < near);
+      if (close) raw.removeAt(i);
+    }
+    for (var i = raw.length - 2; i >= 0; i--) {
+      final (a, at) = raw[i];
+      final (b, bt) = raw[i + 1];
+      if ((a.kind == StepKind.door || a.kind == StepKind.passage) && b.kind == StepKind.enterRoom && bt - at < near) {
+        raw[i] = (RouteStep(a.kind, mapId: a.mapId, position: a.position, regionId: b.regionId, targetId: b.targetId), at);
+        raw.removeAt(i + 1);
+      }
+    }
+    for (var i = raw.length - 1; i > 0; i--) {
+      final (b, bt) = raw[i];
+      if (!isTurn(b.kind)) continue;
+      // the turn before it, skipping doorways in between
+      var j = i - 1;
+      while (j > 0 && (raw[j].$1.kind == StepKind.door || raw[j].$1.kind == StepKind.passage)) {
+        j--;
+      }
+      final (a, at) = raw[j];
+      if (a.kind == b.kind && a.targetId == b.targetId && bt - at < 40) raw.removeAt(i);
     }
   }
 

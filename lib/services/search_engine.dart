@@ -57,7 +57,8 @@ class SearchEngine {
 
   static String groupLabel(String key) => switch (key) {
     'hall' => S.t('f_halls'),
-    _ => S.category(PlaceCategory.values.firstWhere((c) => c.name == key)),
+    // plural, as on the map's filter chips ("Highlights", not "Highlight")
+    _ => S.filter(PlaceCategory.values.firstWhere((c) => c.name == key)),
   };
 
   /// Lower-cases and folds text so typing in any of the eight languages matches:
@@ -113,8 +114,57 @@ class SearchEngine {
     return b.toString();
   }
 
-  /// [en] in every language, for matching.
-  static String _allNames(String en) => [for (final l in AppLang.values) S.nameIn(en, l)].join(' | ');
+  /// [en] in every language, for matching, with the other spellings visitors
+  /// use for the same Egyptian names.
+  static String _allNames(String en) {
+    final names = [for (final l in AppLang.values) S.nameIn(en, l)].join(' | ');
+    final low = _norm(names);
+    return [names, for (final e in _spellings.entries) if (low.contains(e.key)) e.value].join(' | ');
+  }
+
+  /// Other spellings of names on the plans (Egyptology has several systems,
+  /// guidebooks and signs mix them).
+  static const Map<String, String> _spellings = {
+    'ramesses': 'ramses rameses ramesses ramsis ramsess',
+    'merenpetah': 'merneptah merenptah merenpta',
+    'senwosret': 'senusret senusert sesostris senwosret',
+    'khufu': 'cheops kheops khufu',
+    'tutankhamun': 'tutankhamen tutankamun tutankhamon king tut',
+    'sakkara': 'saqqara saqqarah sakkara',
+    'ptolemaic': 'ptolemy ptolemies',
+    'obelisk': 'obelisque obelisco',
+  };
+
+  /// Edit distance between [a] and [b], or [max] + 1 once it is certain to exceed [max].
+  static int _distance(String a, String b, int max) {
+    if ((a.length - b.length).abs() > max) return max + 1;
+    var prev = List<int>.generate(b.length + 1, (i) => i);
+    for (var i = 1; i <= a.length; i++) {
+      final cur = List<int>.filled(b.length + 1, 0)..[0] = i;
+      var rowMin = i;
+      for (var j = 1; j <= b.length; j++) {
+        final cost = a.codeUnitAt(i - 1) == b.codeUnitAt(j - 1) ? 0 : 1;
+        cur[j] = [prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost].reduce((x, y) => x < y ? x : y);
+        if (cur[j] < rowMin) rowMin = cur[j];
+      }
+      if (rowMin > max) return max + 1;
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+
+  static final _wordSplit = RegExp(r"[\s|,.'’()\-–·:]+");
+
+  /// A typo of a word of the name ("tutankamon", "ramsees"): one slip in a
+  /// word of 5–7 letters, two in a longer one.
+  static bool _nearMiss(SearchEntry e, String t) {
+    if (t.length < 5) return false;
+    final max = t.length >= 8 ? 2 : 1;
+    for (final w in '${e.titleLower} ${e.altLower}'.split(_wordSplit)) {
+      if (w.length >= 4 && _distance(t, w, max) <= max) return true;
+    }
+    return false;
+  }
 
   static String _allMapTitles(GemMap m) =>
       [m.title, for (final l in AppLang.values) kUi['map_${m.id}']?[l.index] ?? ''].join(' ');
@@ -243,6 +293,8 @@ class SearchEngine {
           best = 12;
         } else if (e.storyLower.contains(t)) {
           best = 6;
+        } else if (_nearMiss(e, t)) {
+          best = 35;
         }
       }
       if (best == 0) return 0; // every word has to match something
@@ -251,8 +303,21 @@ class SearchEngine {
     return total;
   }
 
-  /// Matches grouped by type; groups ordered by their best hit.
-  static List<({String key, List<SearchEntry> items})> search(List<SearchEntry> all, String query, {String filter = 'all'}) {
+  /// Walking metres to [e] from where the visitor is, in [near] (by place id);
+  /// null for a hall, or when unknown.
+  static double? distanceOf(SearchEntry e, Map<String, double>? near) =>
+      near == null || e.place == null ? null : near[e.place!.id];
+
+  static int _byDistance(SearchEntry a, SearchEntry b, Map<String, double>? near) {
+    final da = distanceOf(a, near), db = distanceOf(b, near);
+    if (da == null || db == null) return da == null ? (db == null ? 0 : 1) : -1;
+    return da.compareTo(db);
+  }
+
+  /// Matches grouped by type; groups ordered by their best hit. With [near]
+  /// (walking metres from where the visitor is), equally good matches come
+  /// nearest first: "restroom" lists the closest one at the top.
+  static List<({String key, List<SearchEntry> items})> search(List<SearchEntry> all, String query, {String filter = 'all', Map<String, double>? near}) {
     final toks = tokens(query);
     final scored = <(SearchEntry, int)>[];
     for (final e in all) {
@@ -260,7 +325,11 @@ class SearchEngine {
       final s = toks.isEmpty ? 1 : _score(e, toks);
       if (s > 0) scored.add((e, s));
     }
-    scored.sort((a, b) => b.$2 != a.$2 ? b.$2.compareTo(a.$2) : a.$1.title.compareTo(b.$1.title));
+    scored.sort((a, b) {
+      if (b.$2 != a.$2) return b.$2.compareTo(a.$2);
+      final d = _byDistance(a.$1, b.$1, near);
+      return d != 0 ? d : a.$1.title.compareTo(b.$1.title);
+    });
     final groups = <String, List<SearchEntry>>{};
     final best = <String, int>{};
     for (final (e, s) in scored) {
@@ -276,8 +345,10 @@ class SearchEngine {
     return [for (final k in keys) (key: k, items: groups[k]!)];
   }
 
-  /// What to show before anything is typed: entrances, key services, highlights.
-  static List<({String key, List<SearchEntry> items})> suggestions(List<SearchEntry> all) {
+  /// What to show before anything is typed: entrances, key services,
+  /// highlights; each group nearest first when [near] is known (otherwise in
+  /// the museum's own order).
+  static List<({String key, List<SearchEntry> items})> suggestions(List<SearchEntry> all, {Map<String, double>? near}) {
     final seen = <String>{};
     final picks = <SearchEntry>[];
     for (final e in all) {
@@ -291,6 +362,16 @@ class SearchEngine {
     final groups = <String, List<SearchEntry>>{};
     for (final e in picks) {
       groups.putIfAbsent(e.categoryKey, () => []).add(e);
+    }
+    if (near != null) {
+      for (final g in groups.values) {
+        // stable: equal or unknown distances keep the museum's order
+        final idx = {for (var i = 0; i < g.length; i++) g[i]: i};
+        g.sort((a, b) {
+          final d = _byDistance(a, b, near);
+          return d != 0 ? d : idx[a]!.compareTo(idx[b]!);
+        });
+      }
     }
     final keys = groups.keys.toList()..sort((a, b) => order.indexOf(a).compareTo(order.indexOf(b)));
     return [for (final k in keys) (key: k, items: groups[k]!)];

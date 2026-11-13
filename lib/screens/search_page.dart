@@ -9,13 +9,24 @@ import '../widgets/place_badge.dart';
 /// map names, and NUMBERS: "5" lists gallery 05, attraction 5, restaurant 5,
 /// shop 5… grouped by type. Pops with the chosen [SearchEntry].
 class SearchPage extends StatefulWidget {
-  const SearchPage({super.key});
+  const SearchPage({super.key, this.placesOnly = false, this.near, this.onLocate});
+
+  /// Only places (no halls), e.g. when adding stops to a trip.
+  final bool placesOnly;
+
+  /// Walking metres from where the visitor is, by place id (null until they
+  /// say where they are): lists come nearest first and show the distance.
+  final Map<String, double>? near;
+
+  /// Asks where the visitor is (the page closes first); offered while [near]
+  /// is unknown.
+  final VoidCallback? onLocate;
 
   /// Fade + slight rise, to match the other transitions in the app.
-  static Route<SearchEntry> route() => PageRouteBuilder<SearchEntry>(
+  static Route<SearchEntry> route({bool placesOnly = false, Map<String, double>? near, VoidCallback? onLocate}) => PageRouteBuilder<SearchEntry>(
     transitionDuration: const Duration(milliseconds: 260),
     reverseTransitionDuration: const Duration(milliseconds: 200),
-    pageBuilder: (_, _, _) => const SearchPage(),
+    pageBuilder: (_, _, _) => SearchPage(placesOnly: placesOnly, near: near, onLocate: onLocate),
     transitionsBuilder: (_, anim, _, child) => FadeTransition(
       opacity: CurvedAnimation(parent: anim, curve: Curves.easeOut),
       child: SlideTransition(
@@ -34,7 +45,7 @@ class SearchPage extends StatefulWidget {
 
 class _SearchPageState extends State<SearchPage> {
   final _controller = TextEditingController();
-  final _all = SearchEngine.build();
+  late final _all = SearchEngine.build(regions: !widget.placesOnly);
   String _filter = 'all';
 
   @override
@@ -47,9 +58,10 @@ class _SearchPageState extends State<SearchPage> {
   Widget build(BuildContext context) {
     final p = context.pal;
     final q = _controller.text;
+    final near = widget.near;
     final groups = q.trim().isEmpty && _filter == 'all'
-        ? SearchEngine.suggestions(_all)
-        : SearchEngine.search(_all, q, filter: _filter);
+        ? SearchEngine.suggestions(_all, near: near)
+        : SearchEngine.search(_all, q, filter: _filter, near: near);
     final count = groups.fold<int>(0, (n, g) => n + g.items.length);
     final filters = [
       'all',
@@ -132,12 +144,12 @@ class _SearchPageState extends State<SearchPage> {
                     backgroundColor: p.surface,
                     side: BorderSide(color: on ? p.accent : p.line),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(18),
+                      borderRadius: BorderRadius.circular(20),
                     ),
                     labelStyle: TextStyle(
                       fontFamily: 'Arial',
                       fontWeight: FontWeight.w700,
-                      fontSize: 13,
+                      fontSize: 14,
                       color: on ? p.onAccent : p.ink,
                     ),
                   );
@@ -153,13 +165,14 @@ class _SearchPageState extends State<SearchPage> {
                         key: ValueKey('$q|$_filter'),
                         padding: const EdgeInsets.only(bottom: 30),
                         children: [
+                          if (q.trim().isEmpty && near == null && widget.onLocate != null) _locateHint(),
                           if (q.trim().isEmpty && _filter == 'all')
-                            _header(S.t('popular'))
+                            _header(S.t(near == null ? 'popular' : 'sorted_near'))
                           else if (q.trim().isNotEmpty)
                             Padding(
                               padding: EdgeInsets.fromLTRB(20, 6, 20, 0),
                               child: Text(
-                                S.t('results_n', n: count),
+                                S.count('results_n', count),
                                 style: TextStyle(
                                   fontFamily: 'Arial',
                                   fontSize: 12,
@@ -197,7 +210,7 @@ class _SearchPageState extends State<SearchPage> {
             text.toUpperCase(),
             style: TextStyle(
               fontFamily: 'Arial',
-              fontSize: 11,
+              fontSize: 12,
               letterSpacing: S.tracking(1.6),
               color: p.gold,
               fontWeight: FontWeight.w800,
@@ -209,7 +222,7 @@ class _SearchPageState extends State<SearchPage> {
               '$count',
               style: TextStyle(
                 fontFamily: 'Arial',
-                fontSize: 11,
+                fontSize: 12,
                 color: p.muted,
                 fontWeight: FontWeight.w700,
               ),
@@ -220,8 +233,44 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
+  /// No position yet: lists keep the museum's order; one tap to say where you are.
+  Widget _locateHint() {
+    final p = context.pal;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
+      child: Material(
+        color: p.accent.withValues(alpha: .10),
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () {
+            Navigator.of(context).pop();
+            widget.onLocate!();
+          },
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Icon(Icons.my_location, color: p.accent, size: 20),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    S.t('locate_to_sort'),
+                    style: TextStyle(fontFamily: 'Arial', fontSize: 14, fontWeight: FontWeight.w700, color: p.ink),
+                  ),
+                ),
+                Icon(Icons.chevron_right, color: p.muted),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _tile(SearchEntry e, String q) {
     final p = context.pal;
+    final meters = SearchEngine.distanceOf(e, widget.near);
     final base = TextStyle(
       fontFamily: 'Arial',
       fontSize: 16,
@@ -271,14 +320,20 @@ class _SearchPageState extends State<SearchPage> {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontFamily: 'Arial',
-                      fontSize: 12.5,
+                      fontSize: 12,
                       color: p.muted,
                     ),
                   ),
                 ],
               ),
             ),
-            Icon(Icons.north_east, size: 18, color: p.line),
+            if (meters != null) ...[
+              const SizedBox(width: 10),
+              Text(
+                S.distance(meters),
+                style: TextStyle(fontFamily: 'Arial', fontSize: 13, fontWeight: FontWeight.w700, color: p.muted),
+              ),
+            ],
           ],
         ),
       ),
@@ -299,7 +354,7 @@ class _SearchPageState extends State<SearchPage> {
             Text(
               S.t('no_results'),
               style: TextStyle(
-                fontSize: 20,
+                fontSize: 22,
                 fontWeight: FontWeight.w700,
                 color: p.ink,
               ),

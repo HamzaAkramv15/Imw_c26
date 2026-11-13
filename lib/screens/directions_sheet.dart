@@ -10,10 +10,14 @@ import '../widgets/gem_ui.dart';
 /// Step-by-step directions for the current route or tour, grouped by map so
 /// "inside the building" and "outside" read as separate stages.
 class DirectionsSheet extends StatelessWidget {
-  const DirectionsSheet({super.key, required this.title, required this.route, required this.onStepTap, required this.onToggleStairs});
+  const DirectionsSheet({super.key, required this.title, required this.route, required this.onStepTap, required this.onToggleStairs, this.current});
 
   final String title;
   final RouteResult route;
+
+  /// The instruction shown on the route card (highlighted here); tapping
+  /// another one shows that one on the map.
+  final RouteStep? current;
   final void Function(RouteStep) onStepTap;
 
   /// Called with the new "avoid stairs" value. The screen re-routes.
@@ -73,7 +77,7 @@ class DirectionsSheet extends StatelessWidget {
                             children: [
                               Icon(note.$1, size: 15, color: p.muted),
                               const SizedBox(width: 6),
-                              Expanded(child: Text(note.$2, style: TextStyle(fontFamily: 'Arial', fontSize: 12.5, color: p.muted))),
+                              Expanded(child: Text(note.$2, style: TextStyle(fontFamily: 'Arial', fontSize: 12, color: p.muted))),
                             ],
                           ),
                         ],
@@ -94,7 +98,7 @@ class DirectionsSheet extends StatelessWidget {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
                   activeThumbColor: p.accent,
                   secondary: Icon(avoid ? Icons.accessible_forward : Icons.accessible, color: p.accent),
-                  title: Text(S.t('avoid_stairs'), style: const TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 14.5)),
+                  title: Text(S.t('avoid_stairs'), style: const TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w800, fontSize: 14)),
                   value: avoid,
                   onChanged: onToggleStairs,
                 ),
@@ -116,12 +120,15 @@ class DirectionsSheet extends StatelessWidget {
                   }
                   final s = r as RouteStep;
                   final last = s.kind == StepKind.arrive || s.kind == StepKind.stop;
+                  final now = identical(s, current);
                   return ListTile(
                     onTap: () => onStepTap(s),
+                    selected: now,
+                    selectedTileColor: p.accent.withValues(alpha: .12),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
                     leading: CircleAvatar(radius: 19, backgroundColor: last ? p.gold : p.accent, child: Icon(s.icon, size: 20, color: p.surface)),
-                    title: Text(S.step(s), style: TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w700, fontSize: 15, color: p.ink)),
-                    subtitle: s.meters > 4 ? Text(S.distance(s.meters), style: TextStyle(fontFamily: 'Arial', fontSize: 12.5, color: p.muted)) : null,
+                    title: Text(S.step(s), style: TextStyle(fontFamily: 'Arial', fontWeight: FontWeight.w700, fontSize: 16, color: p.ink)),
+                    subtitle: s.meters > 4 ? Text(S.distance(s.meters), style: TextStyle(fontFamily: 'Arial', fontSize: 12, color: p.muted)) : null,
                   );
                 },
               ),
@@ -139,7 +146,7 @@ class DirectionsSheet extends StatelessWidget {
     children: [
       Icon(icon, size: 16, color: p.muted),
       const SizedBox(width: 5),
-      Text(text, style: TextStyle(fontFamily: 'Arial', fontSize: 13.5, color: p.muted, fontWeight: FontWeight.w700)),
+      Text(text, style: TextStyle(fontFamily: 'Arial', fontSize: 14, color: p.muted, fontWeight: FontWeight.w700)),
     ],
   );
   }
